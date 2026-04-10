@@ -1,0 +1,13 @@
+pandas
+numpy
+pyarrow
+scipy
+scikit-learn
+torch
+matplotlib
+plotly
+streamlit
+requests
+python-dotenv
+PyYAML
+jupyter

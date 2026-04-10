@@ -1,0 +1,8 @@
+project_name: weather_station_fault_detection
+canonical_timezone: UTC
+raw_station_dir: data/raw/stations
+merged_dir: data/merged
+external_dir: data/external
+labels_dir: data/labels
+processed_dir: data/processed
+figures_dir: outputs/figures
