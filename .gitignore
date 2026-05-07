@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .env
 .cache/
+data/external/wu_minute_pulls/
 .ipynb_checkpoints/
 .DS_Store
 Thumbs.db
