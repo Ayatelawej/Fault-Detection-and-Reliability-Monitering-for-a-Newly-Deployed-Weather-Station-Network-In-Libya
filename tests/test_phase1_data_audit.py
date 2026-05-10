@@ -8,6 +8,7 @@ from src.config.paths import (
     EXPECTED_FROZEN_N_ROWS,
     EXPECTED_STATION_COUNT,
     FIGURES_DIR,
+    HOURLY_ROW_STATES_PATH,
     MERGED_DATASET_PATH,
     MISSINGNESS_HEATMAP_PATH,
     STATION_COVERAGE_FIGURE_PATH,
@@ -25,7 +26,6 @@ from src.features.row_state import (
     classify_row_states,
 )
 
-HOURLY_ROW_STATES_PATH = DATA_AUDIT_SUMMARY_PATH.parent / "hourly_row_states.parquet"
 MISSINGNESS_BY_VARIABLE_PATH = DATA_AUDIT_SUMMARY_PATH.parent / "missingness_by_variable.csv"
 
 EXPECTED_ROW_STATES = {

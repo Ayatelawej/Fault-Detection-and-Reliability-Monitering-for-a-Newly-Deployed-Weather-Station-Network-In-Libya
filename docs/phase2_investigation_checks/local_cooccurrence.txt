@@ -1,0 +1,54 @@
+=== Local outage co-occurrence analysis ===
+Total station pairs analyzed: 325
+Pairs with computable ratio: 325
+
+Interpretation:
+  ratio = 1.0 means outages are independent (expected by chance)
+  ratio > 1.0 means stations co-fail more often than chance
+  ratio < 1.0 means stations co-fail less often than chance
+
+=== Co-occurrence ratio by distance bucket ===
+                 n_pairs  median_ratio  mean_ratio  min_ratio  max_ratio
+distance_bucket                                                         
+0-25km                15      2.408247    2.502885   1.034152   5.488693
+25-50km               34      3.125628    2.877809   0.995285   5.059358
+50-100km              93      2.454485    2.660993   0.879304   6.462047
+100-200km            105      1.861854    2.471749   0.971532   6.694465
+200-500km             30      2.998086    2.904991   1.041132   6.493397
+>500km                48      1.452468    2.546471   0.967179   6.732843
+
+=== Top 15 pairs by co-occurrence ratio ===
+station_a station_b  distance_km  n_both_active_hours  n_both_offline  expected_both_offline_if_independent  cooccurrence_ratio
+ IALWAH18   INUQAT8   981.603529                 4166             190                             28.219875            6.732843
+ IJABAL13   INUQAT8   104.054176                 4132             190                             28.381655            6.694465
+ IJABAL15   INUQAT8   186.142182                 4166             188                             28.429429            6.612866
+ IALWAH18  IJABAL15   838.068851                 4256             267                             40.912594            6.526108
+ IMISRA13   INUQAT8   251.662154                 4166             254                             39.116659            6.493397
+ IJABAL13  IJABAL15    82.105492                 4222             283                             43.794173            6.462047
+ IALWAH18  IJABAL13   898.651969                 4239             237                             40.771644            5.812863
+ IJABAL15   IJANZO2   151.054359                 4164             231                             39.878963            5.792528
+ IJABAL15   ITAHLI1   115.894656                 4193             289                             50.340329            5.740924
+  IJANZO2   INUQAT8    96.060008                 4164             163                             28.512968            5.716697
+ IJABAL15   IZAWIY7   145.039916                 4215             282                             50.104389            5.628249
+  INUQAT8   ITAHLI1   109.300950                 4166             196                             34.855737            5.623178
+ IJABAL15  IMISRA12   207.203545                 3992             233                             41.455411            5.620497
+  IJANZO2   IJANZO3    13.207627                 4164             249                             45.365994            5.488693
+  IBARAS3  IJABAL15    75.852549                 4228             310                             57.289972            5.411069
+
+=== All pairs within 25 km ===
+station_a station_b  distance_km  n_both_active_hours  n_both_offline  expected_both_offline_if_independent  cooccurrence_ratio
+I90583612  IJABAL13    15.353775                 3687             366                            333.528072            1.097359
+I90583612  IJABAL14    21.342393                 3687             287                            277.522105            1.034152
+  IBARAS3  IJABAL16    14.029853                 4227             235                             96.392240            2.437956
+  IBIRAL3  IJABAL13    24.230248                 4216             251                             59.221537            4.238323
+  IJANZO2   IJANZO3    13.207627                 4164             249                             45.365994            5.488693
+  IJANZO2   IJANZO4    24.345955                 3538             351                            309.929056            1.132517
+  IJANZO2  ITRIPO33    17.129530                 4033             236                             65.858666            3.583431
+  IJANZO2   IZAWIY7    19.375539                 4164             160                             44.778098            3.573175
+  IJANZO3   IZAWIY7     6.256250                 4181             116                             51.050706            2.272251
+  IJANZO4  ITRIPO33    21.595700                 3483             330                            304.961240            1.082105
+ INUQAT10   INUQAT9    12.956084                 4088             264                            113.775685            2.320355
+ INUQAT10   IZAWIY5    24.614102                 4088             216                             89.691781            2.408247
+  INUQAT9   IZAWIY5    12.292673                 4146             268                             89.383743            2.998308
+ ITRIPO32  ITRIPO33    21.222735                 3649             433                            320.959167            1.349081
+  IZAWIY5   IZAWIY7    20.246468                 4215             166                             65.682088            2.527325

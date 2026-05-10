@@ -1,0 +1,43 @@
+=== Winter silence diagnostic (Dec 4 2025 - Mar 2 2026) ===
+Hours analyzed: 2136
+Midnight-bin hours analyzed (hours 22-23 UTC): 178
+
+=== Online station count statistics across all hours ===
+Median online stations: 21.0
+Mean online stations: 20.9
+Min online stations: 4
+Max online stations: 25
+
+=== Online station count at midnight bins (22-23 UTC) ===
+Median online stations: 22.0
+Hours with >= 10 online stations: 177 of 178
+Hours with >= 15 online stations: 177 of 178
+Hours with >= 20 online stations: 158 of 178
+
+=== Online count distribution at midnight bins ===
+count    178.000000
+mean      21.483146
+std        1.890281
+min        7.000000
+25%       21.000000
+50%       22.000000
+75%       23.000000
+max       24.000000
+
+=== Per-week summary across the silence window ===
+          mean_online  min_online  mean_offline
+iso_week                                       
+2025-W49    17.479167           4      8.520833
+2025-W50    22.577381          19      3.422619
+2025-W51    22.446429          18      3.553571
+2025-W52    22.255952          19      3.744048
+2026-W01    21.517857          18      4.482143
+2026-W02    20.750000          18      5.250000
+2026-W03    21.172619          19      4.827381
+2026-W04    19.869048          17      6.130952
+2026-W05    20.053571          17      5.946429
+2026-W06    20.226190          17      5.773810
+2026-W07    20.202381          17      5.797619
+2026-W08    21.250000          18      4.750000
+2026-W09    20.791667          18      4.636905
+2026-W10    20.500000          17      1.500000

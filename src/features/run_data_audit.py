@@ -16,6 +16,7 @@ import pandas as pd
 from src.config.paths import (
     DATA_AUDIT_SUMMARY_PATH,
     FIGURES_DIR,
+    HOURLY_ROW_STATES_PATH,
     MEASUREMENT_COLUMNS,
     MERGED_DATASET_PATH,
     MISSINGNESS_HEATMAP_PATH,
@@ -36,7 +37,6 @@ from src.features.row_state import (
     classify_row_states,
 )
 
-HOURLY_ROW_STATES_PATH = PROCESSED_DIR / "hourly_row_states.parquet"
 MISSINGNESS_BY_VARIABLE_PATH = PROCESSED_DIR / "missingness_by_variable.csv"
 
 SUMMARY_COLUMNS = [

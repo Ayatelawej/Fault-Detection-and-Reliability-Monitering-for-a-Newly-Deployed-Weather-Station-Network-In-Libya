@@ -17,6 +17,10 @@ MERGED_DATASET_PATH = MERGED_DIR / "station_hourly_merged.csv"
 STATION_REGISTRY_PATH = MERGED_DIR / "station_registry.csv"
 DATA_AUDIT_SUMMARY_PATH = PROCESSED_DIR / "data_audit_summary.csv"
 
+HOURLY_ROW_STATES_PATH = PROCESSED_DIR / "hourly_row_states.parquet"
+AVAILABILITY_EVENTS_PATH = PROCESSED_DIR / "availability_events.parquet"
+NETWORK_OUTAGE_WINDOWS_PATH = PROCESSED_DIR / "network_outage_windows.csv"
+
 STATION_COVERAGE_FIGURE_PATH = FIGURES_DIR / "station_coverage_timeline.png"
 MISSINGNESS_HEATMAP_PATH = FIGURES_DIR / "missingness_heatmap.png"
 

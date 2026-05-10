@@ -1,0 +1,133 @@
+======================================================================
+NW_20251119T23  |  21 stations  |  2025-11-19 23:00:00+00:00
+======================================================================
+station_id             city  latitude  longitude
+  INUQAT10       Al-Ajaylat 32.771523  12.320158
+  IJABAL16        Al-Asabaa 32.081197  12.888562
+   ITAHLI1      Al-Aziziyah 32.503011  13.037324
+   IZAWIY7       Al-Zawiyah 32.756648  12.798849
+  IALWAH18           Awjila 29.124472  21.285446
+   IBIRAL3    Bir al Ghanam 32.318991  12.574238
+   IJANZO2          Ganzour 32.820177  12.991854
+   IMURQU6            Khoms 32.657230  14.242337
+   IJANZO3             Maya 32.784235  12.857167
+  IJABAL15           Mizdah 31.461729  12.983949
+   IMURQU7         Msallata 32.464557  14.077052
+   IJANZO4 Qasr Bin Ghashir 32.690144  13.201313
+   INUQAT8         Ragdalin 32.897844  11.967586
+   INUQAT9         Sabratha 32.736552  12.452316
+  ITRIPO32           Tajura 32.881396  13.387467
+  IMISRA12         Tawergha 31.971379  15.091041
+   INALUT3             Tiji 32.004460  11.381656
+  ITRIPO33          Tripoli 32.881258  13.160197
+  IJABAL13           Yafran 32.101958  12.551183
+  IJABAL14           Zintan 31.924210  12.264878
+  IMISRA13           Zliten 32.348137  14.574401
+Cities affected: {'Al-Ajaylat': 1, 'Al-Asabaa': 1, 'Al-Aziziyah': 1, 'Al-Zawiyah': 1, 'Awjila': 1, 'Bir al Ghanam': 1, 'Ganzour': 1, 'Khoms': 1, 'Maya': 1, 'Mizdah': 1, 'Msallata': 1, 'Qasr Bin Ghashir': 1, 'Ragdalin': 1, 'Sabratha': 1, 'Tajura': 1, 'Tawergha': 1, 'Tiji': 1, 'Tripoli': 1, 'Yafran': 1, 'Zintan': 1, 'Zliten': 1}
+Lat range: 29.12 to 32.90
+Lon range: 11.38 to 21.29
+
+======================================================================
+NW_20251012T23  |  20 stations  |  2025-10-12 23:00:00+00:00
+======================================================================
+station_id          city  latitude  longitude
+  INUQAT10    Al-Ajaylat 32.771523  12.320158
+  IJABAL16     Al-Asabaa 32.081197  12.888562
+   ITAHLI1   Al-Aziziyah 32.503011  13.037324
+ I90583612    Al-Uwaynah 31.976779  12.482434
+  IALWAH18        Awjila 29.124472  21.285446
+   IBIRAL3 Bir al Ghanam 32.318991  12.574238
+   IJANZO2       Ganzour 32.820177  12.991854
+   IMURQU6         Khoms 32.657230  14.242337
+   IJANZO3          Maya 32.784235  12.857167
+  IJABAL15        Mizdah 31.461729  12.983949
+   IMURQU7      Msallata 32.464557  14.077052
+   INUQAT8      Ragdalin 32.897844  11.967586
+   INUQAT9      Sabratha 32.736552  12.452316
+  ITRIPO32        Tajura 32.881396  13.387467
+   IMURQU5       Tarhuna 32.294368  13.623417
+   INALUT3          Tiji 32.004460  11.381656
+  ITRIPO33       Tripoli 32.881258  13.160197
+  IJABAL13        Yafran 32.101958  12.551183
+  IJABAL14        Zintan 31.924210  12.264878
+  IMISRA13        Zliten 32.348137  14.574401
+Cities affected: {'Al-Ajaylat': 1, 'Al-Asabaa': 1, 'Al-Aziziyah': 1, 'Al-Uwaynah': 1, 'Awjila': 1, 'Bir al Ghanam': 1, 'Ganzour': 1, 'Khoms': 1, 'Maya': 1, 'Mizdah': 1, 'Msallata': 1, 'Ragdalin': 1, 'Sabratha': 1, 'Tajura': 1, 'Tarhuna': 1, 'Tiji': 1, 'Tripoli': 1, 'Yafran': 1, 'Zintan': 1, 'Zliten': 1}
+Lat range: 29.12 to 32.90
+Lon range: 11.38 to 21.29
+
+======================================================================
+NW_20251021T23  |  18 stations  |  2025-10-21 23:00:00+00:00
+======================================================================
+station_id             city  latitude  longitude
+  INUQAT10       Al-Ajaylat 32.771523  12.320158
+  IJABAL16        Al-Asabaa 32.081197  12.888562
+   ITAHLI1      Al-Aziziyah 32.503011  13.037324
+   IZAWIY7       Al-Zawiyah 32.756648  12.798849
+  IALWAH18           Awjila 29.124472  21.285446
+   IBIRAL3    Bir al Ghanam 32.318991  12.574238
+   IJANZO2          Ganzour 32.820177  12.991854
+   IBARAS3          Gharyan 32.143264  13.018256
+  IJABAL15           Mizdah 31.461729  12.983949
+   IMURQU7         Msallata 32.464557  14.077052
+   IJANZO4 Qasr Bin Ghashir 32.690144  13.201313
+   INUQAT8         Ragdalin 32.897844  11.967586
+   INUQAT9         Sabratha 32.736552  12.452316
+   IZAWIY5           Surman 32.752357  12.582403
+   IMURQU5          Tarhuna 32.294368  13.623417
+  IMISRA12         Tawergha 31.971379  15.091041
+   INALUT3             Tiji 32.004460  11.381656
+  IMISRA13           Zliten 32.348137  14.574401
+Cities affected: {'Al-Ajaylat': 1, 'Al-Asabaa': 1, 'Al-Aziziyah': 1, 'Al-Zawiyah': 1, 'Awjila': 1, 'Bir al Ghanam': 1, 'Ganzour': 1, 'Gharyan': 1, 'Mizdah': 1, 'Msallata': 1, 'Qasr Bin Ghashir': 1, 'Ragdalin': 1, 'Sabratha': 1, 'Surman': 1, 'Tarhuna': 1, 'Tawergha': 1, 'Tiji': 1, 'Zliten': 1}
+Lat range: 29.12 to 32.90
+Lon range: 11.38 to 21.29
+
+======================================================================
+NW_20251203T23  |  18 stations  |  2025-12-03 23:00:00+00:00
+======================================================================
+station_id          city  latitude  longitude
+  INUQAT10    Al-Ajaylat 32.771523  12.320158
+  IJABAL16     Al-Asabaa 32.081197  12.888562
+   ITAHLI1   Al-Aziziyah 32.503011  13.037324
+   IZAWIY7    Al-Zawiyah 32.756648  12.798849
+  IALWAH18        Awjila 29.124472  21.285446
+   IBIRAL3 Bir al Ghanam 32.318991  12.574238
+   IBARAS3       Gharyan 32.143264  13.018256
+   IMURQU6         Khoms 32.657230  14.242337
+  IJABAL15        Mizdah 31.461729  12.983949
+   INUQAT8      Ragdalin 32.897844  11.967586
+   INUQAT9      Sabratha 32.736552  12.452316
+  ITRIPO32        Tajura 32.881396  13.387467
+  IMISRA12      Tawergha 31.971379  15.091041
+   INALUT3          Tiji 32.004460  11.381656
+  ITRIPO33       Tripoli 32.881258  13.160197
+  IJABAL13        Yafran 32.101958  12.551183
+  IJABAL14        Zintan 31.924210  12.264878
+  IMISRA13        Zliten 32.348137  14.574401
+Cities affected: {'Al-Ajaylat': 1, 'Al-Asabaa': 1, 'Al-Aziziyah': 1, 'Al-Zawiyah': 1, 'Awjila': 1, 'Bir al Ghanam': 1, 'Gharyan': 1, 'Khoms': 1, 'Mizdah': 1, 'Ragdalin': 1, 'Sabratha': 1, 'Tajura': 1, 'Tawergha': 1, 'Tiji': 1, 'Tripoli': 1, 'Yafran': 1, 'Zintan': 1, 'Zliten': 1}
+Lat range: 29.12 to 32.90
+Lon range: 11.38 to 21.29
+
+======================================================================
+NW_20251016T22  |  17 stations  |  2025-10-16 22:00:00+00:00
+======================================================================
+station_id        city  latitude  longitude
+   ITAHLI1 Al-Aziziyah 32.503011  13.037324
+   IZAWIY7  Al-Zawiyah 32.756648  12.798849
+  IALWAH18      Awjila 29.124472  21.285446
+   IDERNA7       Derna 32.766357  22.641455
+   IBARAS3     Gharyan 32.143264  13.018256
+   IMURQU6       Khoms 32.657230  14.242337
+  IJABAL15      Mizdah 31.461729  12.983949
+   IMURQU7    Msallata 32.464557  14.077052
+   INUQAT8    Ragdalin 32.897844  11.967586
+   INUQAT9    Sabratha 32.736552  12.452316
+   IMURQU5     Tarhuna 32.294368  13.623417
+  IMISRA12    Tawergha 31.971379  15.091041
+   INALUT3        Tiji 32.004460  11.381656
+  ITRIPO33     Tripoli 32.881258  13.160197
+  IJABAL13      Yafran 32.101958  12.551183
+  IJABAL14      Zintan 31.924210  12.264878
+  IMISRA13      Zliten 32.348137  14.574401
+Cities affected: {'Al-Aziziyah': 1, 'Al-Zawiyah': 1, 'Awjila': 1, 'Derna': 1, 'Gharyan': 1, 'Khoms': 1, 'Mizdah': 1, 'Msallata': 1, 'Ragdalin': 1, 'Sabratha': 1, 'Tarhuna': 1, 'Tawergha': 1, 'Tiji': 1, 'Tripoli': 1, 'Yafran': 1, 'Zintan': 1, 'Zliten': 1}
+Lat range: 29.12 to 32.90
+Lon range: 11.38 to 22.64
