@@ -8,7 +8,6 @@ matplotlib
 plotly
 streamlit
 requests
-python-dotenv
 tenacity
 PyYAML
 jupyter
