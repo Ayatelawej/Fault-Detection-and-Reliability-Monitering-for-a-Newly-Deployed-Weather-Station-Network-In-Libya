@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-# Lifted from Mozn AI on 2026-05-11.
-# Original source path: C:\Users\m\Desktop\Mozn AI\mozn-postprocessing-system\src\postprocessing\ingestion\openmeteo.py
-# Canonical version is maintained in Mozn; this is a one-time EC499 reference copy.
-
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -127,48 +123,6 @@ def _api_call(params: dict[str, Any]) -> dict[str, Any]:
     return response.json()
 
 
-# TODO: lift when Stage 4 begins — depends on Station model
-# def _build_hourly_dataframe(
-#     station: Station, payload: dict[str, Any]
-# ) -> pd.DataFrame:
-#     hourly = payload.get("hourly")
-#     if not hourly or "time" not in hourly:
-#         return pd.DataFrame()
-#
-#     df = pd.DataFrame(hourly)
-#     df["time"] = pd.to_datetime(df["time"], utc=True, errors="coerce")
-#     df = df.rename(columns={"time": "valid_time_utc"})
-#
-#     present_renames = {k: v for k, v in HOURLY_RENAME.items() if k in df.columns}
-#     df = df.rename(columns=present_renames)
-#
-#     df.insert(0, "station_id", station.station_id)
-#     return df
-#
-#
-# TODO: lift when Stage 4 begins — depends on Station model
-# def _build_daily_dataframe(
-#     station: Station, payload: dict[str, Any]
-# ) -> pd.DataFrame:
-#     daily = payload.get("daily")
-#     if not daily or "time" not in daily:
-#         return pd.DataFrame()
-#
-#     df = pd.DataFrame(daily)
-#     df["time"] = pd.to_datetime(df["time"], utc=True, errors="coerce")
-#     df = df.rename(columns={"time": "date_utc"})
-#
-#     for col in ("sunrise", "sunset"):
-#         if col in df.columns:
-#             df[col] = pd.to_datetime(df[col], utc=True, errors="coerce")
-#
-#     present_renames = {k: v for k, v in DAILY_RENAME.items() if k in df.columns}
-#     df = df.rename(columns=present_renames)
-#
-#     df.insert(0, "station_id", station.station_id)
-#     return df
-
-
 def _has_complete_cache(
     hourly_path: Path,
     daily_path: Path,
@@ -190,49 +144,6 @@ def _has_complete_cache(
     hourly_start = hourly["valid_time_utc"].min()
     hourly_end = hourly["valid_time_utc"].max()
     return hourly_start <= start and hourly_end >= end
-
-
-# TODO: lift when Stage 4 begins — depends on Station model
-# def fetch_station_baseline(
-#     station: Station,
-#     start: datetime | None = None,
-#     end: datetime | None = None,
-#     force_refresh: bool = False,
-# ) -> tuple[pd.DataFrame, pd.DataFrame]:
-#     start = start or station.fetch_start
-#     end = end or station.fetch_end
-#
-#     hourly_path = _hourly_path(station.station_id)
-#     daily_path = _daily_path(station.station_id)
-#
-#     if not force_refresh and _has_complete_cache(hourly_path, daily_path, start, end):
-#         return (
-#             pd.read_parquet(hourly_path),
-#             pd.read_parquet(daily_path),
-#         )
-#
-#     params = {
-#         "latitude": station.latitude,
-#         "longitude": station.longitude,
-#         "elevation": station.elevation_m,
-#         "start_date": _format_date(start),
-#         "end_date": _format_date(end),
-#         "hourly": ",".join(HOURLY_VARIABLES),
-#         "daily": ",".join(DAILY_VARIABLES),
-#         "timezone": "UTC",
-#         "wind_speed_unit": "kmh",
-#     }
-#
-#     payload = _api_call(params)
-#
-#     hourly_df = _build_hourly_dataframe(station, payload)
-#     daily_df = _build_daily_dataframe(station, payload)
-#
-#     hourly_path.parent.mkdir(parents=True, exist_ok=True)
-#     hourly_df.to_parquet(hourly_path, engine="pyarrow", index=False)
-#     daily_df.to_parquet(daily_path, engine="pyarrow", index=False)
-#
-#     return hourly_df, daily_df
 
 
 def polite_sleep() -> None:

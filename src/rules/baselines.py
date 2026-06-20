@@ -1,5 +1,3 @@
-"""Robust per-station and network-pooled baselines for Stage 3 rules."""
-
 from __future__ import annotations
 
 import numpy as np
@@ -24,7 +22,6 @@ def select_baseline(
     channel: str,
     min_present_hours: int = COVERAGE_FLOOR_HOURS,
 ) -> dict[str, object]:
-    """Select a station baseline or a network-pooled fallback for one channel."""
     station_values = frame.loc[frame["station_id"].eq(station_id), channel].dropna()
     n_present = int(station_values.size)
 

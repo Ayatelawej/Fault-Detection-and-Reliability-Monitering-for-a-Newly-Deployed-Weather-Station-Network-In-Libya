@@ -34,13 +34,6 @@ def classify_row_states(
     df: pd.DataFrame,
     registry: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Classify each station-hour by station lifecycle and row completeness.
-
-    The returned dataframe is a copy of ``df`` with UTC-normalized ``hour_utc``,
-    station-level first/last present timestamps, boolean helper flags, and a
-    single priority-ordered ``row_state`` label.
-    """
-
     _require_columns(df, ["station_id", "hour_utc", "data_present"], "df")
     _require_columns(df, MEASUREMENT_COLUMNS, "df")
     _require_columns(registry, ["station_id"], "registry")

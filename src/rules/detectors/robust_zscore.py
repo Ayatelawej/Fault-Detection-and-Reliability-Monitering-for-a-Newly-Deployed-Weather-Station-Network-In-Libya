@@ -1,5 +1,3 @@
-"""Robust z-score detector for Stage 3 statistical anomaly scoring."""
-
 from __future__ import annotations
 
 import numpy as np
@@ -10,7 +8,6 @@ def score_robust_zscore(
     series: pd.Series,
     threshold: float = 3.5,
 ) -> pd.DataFrame:
-    """Score a series with median and raw MAD, preserving missing rows."""
     values = series.astype(float)
     present_values = values.dropna()
 

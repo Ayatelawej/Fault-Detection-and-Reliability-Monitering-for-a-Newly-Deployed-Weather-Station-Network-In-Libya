@@ -1,12 +1,3 @@
-"""Stage 3 statistical anomaly detection configuration.
-
-This module centralizes detector thresholds, baseline coverage requirements,
-and channel-specific handling rules for the Stage 3 rules layer. The 0.3%
-flag target ties ROBUST_ZSCORE_FLAG_PERCENTILE and
-ISOLATION_FOREST_CONTAMINATION together: both derive from the Stage 5 manual
-review budget and should move together if that review budget changes.
-"""
-
 ROBUST_ZSCORE_FLAG_PERCENTILE = 99.7
 ROLLING_VARIANCE_WINDOW_HOURS = 6
 ROLLING_VARIANCE_FLAG_THRESHOLD = 1e-6

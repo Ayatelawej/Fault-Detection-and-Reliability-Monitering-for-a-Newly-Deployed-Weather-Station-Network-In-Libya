@@ -1,10 +1,3 @@
-"""Stage 3 behavioral contract for statistical anomaly detection.
-
-These tests define the expected detector, baseline, and channel-transform
-behavior before the Stage 3 src.rules modules are implemented. Failures with
-ImportError or ModuleNotFoundError are expected until those modules exist.
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -105,7 +98,6 @@ def _baseline_input_frame() -> pd.DataFrame:
 
 class TestRobustZScoreContract:
     def test_robust_zscore_flags_single_injected_spike(self) -> None:
-        """A stable channel with one large spike flags only the spike row."""
         from src.rules.detectors.robust_zscore import score_robust_zscore
 
         values = np.tile([9.0, 10.0, 11.0], 8).astype(float)
@@ -123,7 +115,6 @@ class TestRobustZScoreContract:
     def test_robust_zscore_leaves_clean_gaussian_like_series_unflagged(
         self,
     ) -> None:
-        """A clean bell-shaped sample has zero robust z-score flags."""
         from src.rules.detectors.robust_zscore import score_robust_zscore
 
         series = pd.Series(
@@ -138,7 +129,6 @@ class TestRobustZScoreContract:
         assert not flags.fillna(False).astype(bool).any()
 
     def test_robust_zscore_preserves_nan_scores_without_flags(self) -> None:
-        """Missing observations produce NaN scores and are never flagged."""
         from src.rules.detectors.robust_zscore import score_robust_zscore
 
         series = pd.Series(
@@ -157,7 +147,6 @@ class TestRobustZScoreContract:
     def test_robust_zscore_handles_zero_mad_without_infinite_scores(
         self,
     ) -> None:
-        """All-identical values do not divide by zero or raise false flags."""
         from src.rules.detectors.robust_zscore import score_robust_zscore
 
         series = pd.Series([12.0] * 8, name="airtemp_avg_c")
@@ -171,7 +160,6 @@ class TestRobustZScoreContract:
 
 class TestRollingVarianceStuckDetectorContract:
     def test_rolling_variance_flags_six_identical_values(self) -> None:
-        """A six-row constant run is marked stuck for every row in the run."""
         from src.rules.detectors.rolling_variance import detect_stuck_values
 
         series = pd.Series(
@@ -186,7 +174,6 @@ class TestRollingVarianceStuckDetectorContract:
         assert not flags.iloc[[0, 1, 2, 9]].fillna(False).astype(bool).any()
 
     def test_rolling_variance_leaves_varying_series_unflagged(self) -> None:
-        """A normally varying channel has zero stuck-value flags."""
         from src.rules.detectors.rolling_variance import detect_stuck_values
 
         series = pd.Series(
@@ -200,7 +187,6 @@ class TestRollingVarianceStuckDetectorContract:
         assert not flags.fillna(False).astype(bool).any()
 
     def test_rolling_variance_flags_imurqu7_nonzero_rain_fault(self) -> None:
-        """The repeated 4697.98 rain value is treated as a stuck run."""
         from src.rules.detectors.rolling_variance import detect_stuck_values
 
         series = pd.Series(
@@ -215,7 +201,6 @@ class TestRollingVarianceStuckDetectorContract:
         assert not flags.iloc[[0, 1, 14, 15]].fillna(False).astype(bool).any()
 
     def test_rolling_variance_flags_itripo33_zero_wind_fault(self) -> None:
-        """A ten-hour zero wind-speed run is treated as stuck."""
         from src.rules.detectors.rolling_variance import detect_stuck_values
 
         series = pd.Series(
@@ -232,7 +217,6 @@ class TestRollingVarianceStuckDetectorContract:
     def test_rolling_variance_does_not_flag_run_shorter_than_window(
         self,
     ) -> None:
-        """A constant run shorter than the configured window is not stuck."""
         from src.rules.detectors.rolling_variance import detect_stuck_values
 
         series = pd.Series(
@@ -248,7 +232,6 @@ class TestRollingVarianceStuckDetectorContract:
 
 class TestIsolationForestContract:
     def test_isolation_forest_ranks_far_points_as_most_anomalous(self) -> None:
-        """Far points outrank normal bimodal observations by anomaly score."""
         from src.rules.detectors.isolation_forest import score_isolation_forest
 
         normal_left = pd.Series(np.linspace(-1.0, 1.0, 20))
@@ -274,7 +257,6 @@ class TestIsolationForestContract:
     def test_isolation_forest_scores_are_reproducible_with_random_state(
         self,
     ) -> None:
-        """The same input and random_state produce identical scores twice."""
         from src.rules.detectors.isolation_forest import score_isolation_forest
 
         series = pd.Series(
@@ -298,7 +280,6 @@ class TestIsolationForestContract:
 
 class TestBaselineContract:
     def test_station_with_enough_present_hours_uses_own_baseline(self) -> None:
-        """A station over the hour threshold reports station baseline source."""
         from src.rules.baselines import select_baseline
 
         result = select_baseline(
@@ -314,7 +295,6 @@ class TestBaselineContract:
     def test_station_below_present_hour_threshold_uses_network_baseline(
         self,
     ) -> None:
-        """A station below the hour threshold reports network fallback source."""
         from src.rules.baselines import select_baseline
 
         result = select_baseline(
@@ -330,7 +310,6 @@ class TestBaselineContract:
 
 class TestChannelHandlersContract:
     def test_wind_direction_zero_and_360_encode_to_same_pair(self) -> None:
-        """Wind directions at 0 and 360 degrees have the same sin/cos pair."""
         from src.rules.channel_handlers import encode_wind_direction
 
         directions = pd.Series([0.0, 360.0], name="winddir_avg_deg")
@@ -346,7 +325,6 @@ class TestChannelHandlersContract:
         )
 
     def test_wind_direction_nan_encodes_to_nan_pair(self) -> None:
-        """Missing wind direction maps to missing sine and cosine channels."""
         from src.rules.channel_handlers import encode_wind_direction
 
         directions = pd.Series([np.nan], name="winddir_avg_deg")
@@ -358,7 +336,6 @@ class TestChannelHandlersContract:
         assert pd.isna(encoded.loc[0, "cos"])
 
     def test_precip_log_transform_keeps_zero_finite(self) -> None:
-        """Zero precipitation transforms like log1p and never becomes -inf."""
         from src.rules.channel_handlers import log_transform_precip
 
         precip = pd.Series([0.0, 1.0, 10.0], name="precip_total_mm")
