@@ -4,6 +4,28 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.rules.config import COVERAGE_FLOOR_HOURS, ROBUST_ZSCORE_FLAG_PERCENTILE
+
+
+SCORE_CHANNELS = ["temp_avg_c", "winddir_avg_deg", "precip_total_mm"]
+SCORE_OUTPUT_COLUMNS = [
+    "station_id",
+    "hour_utc",
+    "channel",
+    "baseline_source",
+    "zscore",
+    "rolling_variance",
+    "iforest_score",
+    "flag_zscore",
+    "flag_stuck",
+    "flag_iforest",
+    "flag",
+    "reason",
+]
+SCORE_SPIKE_OFFSETS = [240, 780, 1_260]
+SCORE_STUCK_START = 640
+SCORE_STUCK_LENGTH = 12
+
 
 def _assert_detection_frame(
     result: pd.DataFrame,
@@ -93,6 +115,61 @@ def _baseline_input_frame() -> pd.DataFrame:
             ),
         ],
         ignore_index=True,
+    )
+
+
+def _station_score_frame(
+    station_id: str,
+    periods: int,
+    seed: int,
+) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    positions = np.arange(periods, dtype=float)
+    hours = pd.date_range("2024-04-01", periods=periods, freq="h", tz="UTC")
+    precip = np.zeros(periods, dtype=float)
+    wet_positions = np.arange(seed % 37, periods, 113)
+    precip[wet_positions] = rng.uniform(0.05, 0.55, size=len(wet_positions))
+    return pd.DataFrame(
+        {
+            "station_id": station_id,
+            "hour_utc": hours,
+            "temp_avg_c": 20.0
+            + 0.6 * np.sin(positions / 24.0)
+            + rng.normal(0.0, 0.12, periods),
+            "winddir_avg_deg": (positions * 9.0 + seed * 13.0) % 360.0,
+            "precip_total_mm": precip,
+        },
+    )
+
+
+def _score_input_frame() -> pd.DataFrame:
+    normal = _station_score_frame("STA_NORMAL", 1_600, 11)
+    spike = _station_score_frame("STA_SPIKE", 1_600, 22)
+    stuck = _station_score_frame("STA_STUCK", 1_600, 33)
+    sparse = _station_score_frame("STA_SPARSE", 1_400, 44)
+
+    spike.loc[SCORE_SPIKE_OFFSETS, "temp_avg_c"] = (
+        spike.loc[SCORE_SPIKE_OFFSETS, "temp_avg_c"] + 100.0
+    )
+    stuck.loc[
+        SCORE_STUCK_START : SCORE_STUCK_START + SCORE_STUCK_LENGTH - 1,
+        "temp_avg_c",
+    ] = 20.0
+
+    return pd.concat(
+        [normal, spike, stuck, sparse],
+        ignore_index=True,
+    )
+
+
+def _score_output() -> pd.DataFrame:
+    from src.rules.score import compute_anomaly_scores
+
+    return compute_anomaly_scores(
+        _score_input_frame(),
+        SCORE_CHANNELS,
+        flag_percentile=ROBUST_ZSCORE_FLAG_PERCENTILE,
+        random_state=42,
     )
 
 
@@ -346,3 +423,90 @@ class TestChannelHandlersContract:
         assert np.isfinite(transformed.iloc[0])
         assert transformed.iloc[0] == pytest.approx(0.0)
         assert transformed.iloc[2] > transformed.iloc[1] > transformed.iloc[0]
+
+
+class TestScoreOrchestratorIntegration:
+    def test_compute_anomaly_scores_returns_exact_columns(self) -> None:
+        result = _score_output()
+
+        assert list(result.columns) == SCORE_OUTPUT_COLUMNS
+
+    def test_compute_anomaly_scores_returns_expected_long_scored_channels(
+        self,
+    ) -> None:
+        frame = _score_input_frame()
+        result = _score_output()
+        scored_channels = set(result["channel"])
+
+        assert len(result) == len(frame) * 4
+        assert scored_channels == {
+            "temp_avg_c",
+            "winddir_sin",
+            "winddir_cos",
+            "precip_total_mm",
+        }
+        assert "winddir_avg_deg" not in scored_channels
+        assert not result[["station_id", "hour_utc", "channel"]].duplicated().any()
+
+    def test_compute_anomaly_scores_flags_injected_temperature_spikes(
+        self,
+    ) -> None:
+        frame = _score_input_frame()
+        result = _score_output()
+        spike_hours = frame.loc[
+            frame["station_id"].eq("STA_SPIKE"),
+        ].iloc[SCORE_SPIKE_OFFSETS]["hour_utc"]
+        spike_rows = result.loc[
+            result["station_id"].eq("STA_SPIKE")
+            & result["channel"].eq("temp_avg_c")
+            & result["hour_utc"].isin(spike_hours)
+        ]
+
+        assert len(spike_rows) == len(SCORE_SPIKE_OFFSETS)
+        assert spike_rows["flag"].eq(True).all()
+        assert spike_rows["reason"].str.contains("mad_high", regex=False).all()
+
+    def test_compute_anomaly_scores_flags_stuck_temperature_run(self) -> None:
+        frame = _score_input_frame()
+        result = _score_output()
+        stuck_hours = frame.loc[
+            frame["station_id"].eq("STA_STUCK"),
+        ].iloc[
+            SCORE_STUCK_START : SCORE_STUCK_START + SCORE_STUCK_LENGTH
+        ]["hour_utc"]
+        stuck_rows = result.loc[
+            result["station_id"].eq("STA_STUCK")
+            & result["channel"].eq("temp_avg_c")
+            & result["hour_utc"].isin(stuck_hours)
+        ]
+
+        assert len(stuck_rows) == SCORE_STUCK_LENGTH
+        assert stuck_rows["flag"].eq(True).all()
+        assert stuck_rows["reason"].str.contains(
+            "stuck_variance_zero",
+            regex=False,
+        ).all()
+
+    def test_compute_anomaly_scores_leaves_normal_temperature_mostly_unflagged(
+        self,
+    ) -> None:
+        result = _score_output()
+        normal_temp = result.loc[
+            result["station_id"].eq("STA_NORMAL")
+            & result["channel"].eq("temp_avg_c")
+        ]
+
+        assert normal_temp["flag"].mean() < 0.02
+
+    def test_compute_anomaly_scores_records_baseline_source(
+        self,
+    ) -> None:
+        frame = _score_input_frame()
+        result = _score_output()
+        station_counts = frame.groupby("station_id").size()
+        sparse_rows = result.loc[result["station_id"].eq("STA_SPARSE")]
+        above_floor_rows = result.loc[result["station_id"].ne("STA_SPARSE")]
+
+        assert station_counts.loc["STA_SPARSE"] < COVERAGE_FLOOR_HOURS
+        assert sparse_rows["baseline_source"].eq("network_pooled").all()
+        assert above_floor_rows["baseline_source"].eq("station").any()
