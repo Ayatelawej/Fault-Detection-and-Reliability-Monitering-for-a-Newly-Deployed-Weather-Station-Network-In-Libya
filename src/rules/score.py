@@ -6,10 +6,13 @@ import pandas as pd
 from src.rules.baselines import select_baseline
 from src.rules.channel_handlers import encode_wind_direction, log_transform_precip
 from src.rules.config import (
+    CHANNELS_EXCLUDED_FROM_STATISTICAL_LAYER,
     CHANNELS_REQUIRING_CIRCULAR_TRANSFORM,
     CHANNELS_REQUIRING_LOG_TRANSFORM,
     COVERAGE_FLOOR_HOURS,
     ROBUST_ZSCORE_FLAG_PERCENTILE,
+    STUCK_IGNORE_ZERO_CHANNELS,
+    STUCK_SKIP_CHANNELS,
 )
 from src.rules.detectors.isolation_forest import score_isolation_forest
 from src.rules.detectors.robust_zscore import score_robust_zscore
@@ -38,10 +41,18 @@ def _wind_base_name(channel: str) -> str:
     return channel
 
 
+def _active_channels(channels: list[str]) -> list[str]:
+    return [
+        channel
+        for channel in channels
+        if channel not in CHANNELS_EXCLUDED_FROM_STATISTICAL_LAYER
+    ]
+
+
 def _build_scored_wide_frame(df: pd.DataFrame, channels: list[str]) -> pd.DataFrame:
     scored = df[["station_id", "hour_utc"]].copy()
 
-    for channel in channels:
+    for channel in _active_channels(channels):
         if channel in CHANNELS_REQUIRING_CIRCULAR_TRANSFORM:
             encoded = encode_wind_direction(df[channel])
             base = _wind_base_name(channel)
@@ -55,15 +66,20 @@ def _build_scored_wide_frame(df: pd.DataFrame, channels: list[str]) -> pd.DataFr
     return scored
 
 
-def _scored_channel_names(channels: list[str]) -> list[str]:
-    scored_channels: list[str] = []
+def _scored_channel_specs(channels: list[str]) -> list[tuple[str, str]]:
+    scored_channels: list[tuple[str, str]] = []
 
-    for channel in channels:
+    for channel in _active_channels(channels):
         if channel in CHANNELS_REQUIRING_CIRCULAR_TRANSFORM:
             base = _wind_base_name(channel)
-            scored_channels.extend([f"{base}_sin", f"{base}_cos"])
+            scored_channels.extend(
+                [
+                    (channel, f"{base}_sin"),
+                    (channel, f"{base}_cos"),
+                ]
+            )
         else:
-            scored_channels.append(channel)
+            scored_channels.append((channel, channel))
 
     return scored_channels
 
@@ -99,10 +115,10 @@ def compute_anomaly_scores(
     random_state: int = 42,
 ) -> pd.DataFrame:
     scored_wide = _build_scored_wide_frame(df, channels)
-    scored_channels = _scored_channel_names(channels)
+    scored_channels = _scored_channel_specs(channels)
     result_frames: list[pd.DataFrame] = []
 
-    for channel in scored_channels:
+    for original_channel, channel in scored_channels:
         for station_id, station_frame in scored_wide.groupby("station_id", sort=False):
             station_frame = station_frame.sort_values("hour_utc")
             series = station_frame[channel].astype(float)
@@ -113,7 +129,19 @@ def compute_anomaly_scores(
                 min_present_hours=COVERAGE_FLOOR_HOURS,
             )
             zscore = score_robust_zscore(series, baseline=baseline)["score"]
-            stuck = detect_stuck_values(series)
+            if original_channel in STUCK_SKIP_CHANNELS:
+                stuck = pd.DataFrame(
+                    {
+                        "rolling_variance": pd.Series(np.nan, index=series.index),
+                        "flag": pd.Series(False, index=series.index),
+                    },
+                    index=series.index,
+                )
+            else:
+                stuck = detect_stuck_values(
+                    series,
+                    ignore_zero=original_channel in STUCK_IGNORE_ZERO_CHANNELS,
+                )
             iforest_score = score_isolation_forest(
                 series,
                 random_state=random_state,

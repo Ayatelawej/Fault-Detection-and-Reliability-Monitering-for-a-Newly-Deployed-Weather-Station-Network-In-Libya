@@ -4,7 +4,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.rules.config import COVERAGE_FLOOR_HOURS, ROBUST_ZSCORE_FLAG_PERCENTILE
+from src.rules.config import (
+    COVERAGE_FLOOR_HOURS,
+    ROBUST_ZSCORE_FLAG_PERCENTILE,
+    STUCK_SKIP_CHANNELS,
+)
 
 
 SCORE_CHANNELS = ["temp_avg_c", "winddir_avg_deg", "precip_total_mm"]
@@ -24,7 +28,7 @@ SCORE_OUTPUT_COLUMNS = [
 ]
 SCORE_SPIKE_OFFSETS = [240, 780, 1_260]
 SCORE_STUCK_START = 640
-SCORE_STUCK_LENGTH = 12
+SCORE_STUCK_LENGTH = 30
 
 
 def _assert_detection_frame(
@@ -306,6 +310,49 @@ class TestRollingVarianceStuckDetectorContract:
 
         assert not flags.fillna(False).astype(bool).any()
 
+    def test_rolling_variance_ignore_zero_leaves_zero_run_unflagged(self) -> None:
+        from src.rules.detectors.rolling_variance import detect_stuck_values
+
+        series = pd.Series(
+            [2.0, 1.0, *([0.0] * 8), 3.0],
+            name="precip_total_mm",
+        )
+
+        result = detect_stuck_values(series, window=6, ignore_zero=True)
+        flags = _assert_stuck_frame(result, series.index)
+
+        assert not flags.fillna(False).astype(bool).any()
+
+    def test_rolling_variance_ignore_zero_flags_nonzero_constant_run(
+        self,
+    ) -> None:
+        from src.rules.detectors.rolling_variance import detect_stuck_values
+
+        series = pd.Series(
+            [0.0, 1.2, *([9.5] * 8), 0.4],
+            name="precip_total_mm",
+        )
+
+        result = detect_stuck_values(series, window=6, ignore_zero=True)
+        flags = _assert_stuck_frame(result, series.index)
+
+        assert flags.iloc[2:10].eq(True).all()
+        assert not flags.iloc[[0, 1, 10]].fillna(False).astype(bool).any()
+
+    def test_rolling_variance_default_still_flags_zero_run(self) -> None:
+        from src.rules.detectors.rolling_variance import detect_stuck_values
+
+        series = pd.Series(
+            [2.0, 1.0, *([0.0] * 8), 3.0],
+            name="windspeed_avg_kmh",
+        )
+
+        result = detect_stuck_values(series, window=6)
+        flags = _assert_stuck_frame(result, series.index)
+
+        assert flags.iloc[2:10].eq(True).all()
+        assert not flags.iloc[[0, 1, 10]].fillna(False).astype(bool).any()
+
 
 class TestIsolationForestContract:
     def test_isolation_forest_ranks_far_points_as_most_anomalous(self) -> None:
@@ -510,3 +557,16 @@ class TestScoreOrchestratorIntegration:
         assert station_counts.loc["STA_SPARSE"] < COVERAGE_FLOOR_HOURS
         assert sparse_rows["baseline_source"].eq("network_pooled").all()
         assert above_floor_rows["baseline_source"].eq("station").any()
+
+    def test_compute_anomaly_scores_skips_stuck_detection_for_accumulators(
+        self,
+    ) -> None:
+        result = _score_output()
+        precip_rows = result.loc[result["channel"].eq("precip_total_mm")]
+
+        assert "precip_total_mm" in STUCK_SKIP_CHANNELS
+        assert precip_rows["flag_stuck"].eq(False).all()
+        assert not precip_rows["reason"].str.contains(
+            "stuck_variance_zero",
+            regex=False,
+        ).any()
