@@ -9,3 +9,4 @@ data/external/wu_pws_history/
 .DS_Store
 Thumbs.db
 ~$*
+data/processed/statistical_anomaly_scores.parquet
