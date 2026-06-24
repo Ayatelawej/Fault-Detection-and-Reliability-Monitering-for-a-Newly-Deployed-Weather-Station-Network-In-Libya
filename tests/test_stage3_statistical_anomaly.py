@@ -29,6 +29,20 @@ SCORE_OUTPUT_COLUMNS = [
 SCORE_SPIKE_OFFSETS = [240, 780, 1_260]
 SCORE_STUCK_START = 640
 SCORE_STUCK_LENGTH = 30
+EVENT_BASE_HOUR = pd.Timestamp("2024-05-01 00:00:00", tz="UTC")
+EVENT_OUTPUT_COLUMNS = [
+    "station_id",
+    "channel",
+    "start_hour",
+    "end_hour",
+    "duration_hours",
+    "dominant_detector",
+    "detector_concordance",
+    "max_abs_zscore",
+    "max_iforest_score",
+    "min_rolling_variance",
+    "reasons",
+]
 
 
 def _assert_detection_frame(
@@ -175,6 +189,113 @@ def _score_output() -> pd.DataFrame:
         flag_percentile=ROBUST_ZSCORE_FLAG_PERCENTILE,
         random_state=42,
     )
+
+
+def _event_score_row(
+    station_id: str,
+    channel: str,
+    hour_offset: int,
+    flag_zscore: bool = False,
+    flag_stuck: bool = False,
+    flag_iforest: bool = False,
+) -> dict[str, object]:
+    reason_tokens: list[str] = []
+
+    if flag_zscore:
+        reason_tokens.append("mad_high")
+    if flag_stuck:
+        reason_tokens.append("stuck_variance_zero")
+    if flag_iforest:
+        reason_tokens.append("iforest_outlier")
+
+    return {
+        "station_id": station_id,
+        "hour_utc": EVENT_BASE_HOUR + pd.Timedelta(hours=hour_offset),
+        "channel": channel,
+        "zscore": 5.0 if flag_zscore else 0.5,
+        "rolling_variance": 0.0 if flag_stuck else 0.5,
+        "iforest_score": 1.5 if flag_iforest else 0.1,
+        "flag_zscore": flag_zscore,
+        "flag_stuck": flag_stuck,
+        "flag_iforest": flag_iforest,
+        "flag": flag_zscore or flag_stuck or flag_iforest,
+        "reason": "|".join(reason_tokens),
+    }
+
+
+def _events_input_frame() -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+
+    for offset in range(5):
+        rows.append(
+            _event_score_row(
+                "STA_EVENT",
+                "temp_avg_c",
+                offset,
+                flag_stuck=True,
+            )
+        )
+
+    for offset in [0, 1, 2, 4, 5]:
+        rows.append(
+            _event_score_row(
+                "STA_SPLIT",
+                "humidity_avg_pct",
+                offset,
+                flag_iforest=True,
+            )
+        )
+    rows.append(_event_score_row("STA_SPLIT", "humidity_avg_pct", 3))
+
+    for offset in [0, 1, 3, 4]:
+        rows.append(
+            _event_score_row(
+                "STA_GAP",
+                "pressure_max_hpa",
+                offset,
+                flag_zscore=True,
+            )
+        )
+
+    for offset in range(5):
+        rows.append(_event_score_row("STA_CLEAN", "temp_avg_c", offset))
+
+    for channel in ["windspeed_avg_kmh", "winddir_sin"]:
+        for offset in range(3):
+            rows.append(
+                _event_score_row(
+                    "STA_MULTI",
+                    channel,
+                    offset,
+                    flag_stuck=True,
+                )
+            )
+
+    for offset in range(4):
+        rows.append(
+            _event_score_row(
+                "STA_DOMINANT",
+                "temp_high_c",
+                offset,
+                flag_stuck=True,
+            )
+        )
+    rows.append(
+        _event_score_row(
+            "STA_DOMINANT",
+            "temp_high_c",
+            4,
+            flag_zscore=True,
+        )
+    )
+
+    return pd.DataFrame(rows)
+
+
+def _events_output(max_gap_hours: int = 0) -> pd.DataFrame:
+    from src.rules.events import build_events
+
+    return build_events(_events_input_frame(), max_gap_hours=max_gap_hours)
 
 
 class TestRobustZScoreContract:
@@ -570,3 +691,76 @@ class TestScoreOrchestratorIntegration:
             "stuck_variance_zero",
             regex=False,
         ).any()
+
+
+class TestEventBuilderIntegration:
+    def test_build_events_collapses_single_consecutive_run(self) -> None:
+        result = _events_output()
+        event_rows = result.loc[
+            result["station_id"].eq("STA_EVENT")
+            & result["channel"].eq("temp_avg_c")
+        ]
+        event = event_rows.iloc[0]
+
+        assert len(event_rows) == 1
+        assert int(event["duration_hours"]) == 5
+        assert event["start_hour"] == EVENT_BASE_HOUR
+        assert event["end_hour"] == EVENT_BASE_HOUR + pd.Timedelta(hours=4)
+
+    def test_build_events_splits_runs_separated_by_unflagged_hour(self) -> None:
+        result = _events_output()
+        event_rows = result.loc[
+            result["station_id"].eq("STA_SPLIT")
+            & result["channel"].eq("humidity_avg_pct")
+        ]
+
+        assert len(event_rows) == 2
+        assert event_rows["duration_hours"].tolist() == [3, 2]
+        assert event_rows["start_hour"].tolist() == [
+            EVENT_BASE_HOUR,
+            EVENT_BASE_HOUR + pd.Timedelta(hours=4),
+        ]
+
+    def test_build_events_splits_runs_across_missing_hour(self) -> None:
+        result = _events_output()
+        event_rows = result.loc[
+            result["station_id"].eq("STA_GAP")
+            & result["channel"].eq("pressure_max_hpa")
+        ]
+
+        assert len(event_rows) == 2
+        assert event_rows["duration_hours"].tolist() == [2, 2]
+        assert event_rows["start_hour"].tolist() == [
+            EVENT_BASE_HOUR,
+            EVENT_BASE_HOUR + pd.Timedelta(hours=3),
+        ]
+
+    def test_build_events_ignores_unflagged_rows(self) -> None:
+        result = _events_output()
+
+        assert "STA_CLEAN" not in set(result["station_id"])
+
+    def test_build_events_keeps_channels_separate_for_same_station_hours(
+        self,
+    ) -> None:
+        result = _events_output()
+        event_rows = result.loc[result["station_id"].eq("STA_MULTI")]
+
+        assert len(event_rows) == 2
+        assert set(event_rows["channel"]) == {"windspeed_avg_kmh", "winddir_sin"}
+        assert event_rows["duration_hours"].eq(3).all()
+
+    def test_build_events_reports_dominant_detector_and_concordance(self) -> None:
+        result = _events_output()
+        event = result.loc[
+            result["station_id"].eq("STA_DOMINANT")
+            & result["channel"].eq("temp_high_c")
+        ].iloc[0]
+
+        assert event["dominant_detector"] == "stuck"
+        assert int(event["detector_concordance"]) == 2
+
+    def test_build_events_returns_exact_columns(self) -> None:
+        result = _events_output()
+
+        assert list(result.columns) == EVENT_OUTPUT_COLUMNS
