@@ -10,3 +10,4 @@ data/external/wu_pws_history/
 Thumbs.db
 ~$*
 data/processed/statistical_anomaly_scores.parquet
+data/processed/fault_events.parquet

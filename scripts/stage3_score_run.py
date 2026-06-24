@@ -10,9 +10,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config.paths import MERGED_DATASET_PATH, PROCESSED_DIR
+from src.rules.events import build_events
 from src.rules.score import compute_anomaly_scores
 
 OUTPUT_PATH = PROCESSED_DIR / "statistical_anomaly_scores.parquet"
+EVENT_OUTPUT_PATH = PROCESSED_DIR / "fault_events.parquet"
 METADATA_NUMERIC_COLUMNS = {
     "n_raw_records",
     "latitude",
@@ -169,13 +171,111 @@ def _print_known_faults(scores: pd.DataFrame) -> None:
         )
 
 
+def _event_count_table(events: pd.DataFrame, column: str, limit: int = 8) -> pd.DataFrame:
+    return (
+        events[column]
+        .value_counts()
+        .head(limit)
+        .rename_axis(column)
+        .reset_index(name="n_events")
+    )
+
+
+def _print_known_fault_events(events: pd.DataFrame) -> None:
+    wind_channels = [
+        channel
+        for channel in events["channel"].unique()
+        if channel in {"winddir_sin", "winddir_cos"}
+        or channel.startswith("windspeed_")
+        or channel.startswith("windgust_")
+    ]
+    precip_channels = [
+        channel
+        for channel in events["channel"].unique()
+        if channel.startswith("precip_")
+    ]
+    checks = [
+        (
+            "ITRIPO33 windspeed/winddir",
+            events.loc[
+                events["station_id"].eq("ITRIPO33")
+                & events["channel"].isin(wind_channels)
+            ],
+        ),
+        (
+            "IMURQU7 precip",
+            events.loc[
+                events["station_id"].eq("IMURQU7")
+                & events["channel"].isin(precip_channels)
+            ],
+        ),
+    ]
+
+    print()
+    print("KNOWN-FAULT EVENTS")
+    for label, frame in checks:
+        printable = frame.loc[
+            :,
+            [
+                "channel",
+                "start_hour",
+                "end_hour",
+                "duration_hours",
+                "dominant_detector",
+                "reasons",
+            ],
+        ].sort_values(["channel", "start_hour"])
+        print(f"{label}: n_events={len(printable)}")
+        if printable.empty:
+            print("none")
+        else:
+            print(printable.to_string(index=False))
+
+
+def _print_event_summary(events: pd.DataFrame, scores: pd.DataFrame) -> None:
+    flagged_hours = int(scores["flag"].sum())
+    event_fraction = len(events) / flagged_hours if flagged_hours else 0.0
+    long_events = int(events["duration_hours"].ge(24).sum()) if not events.empty else 0
+
+    print()
+    print("EVENT SUMMARY")
+    print(f"Total events: {len(events):,}")
+    print(f"Flagged station-hours: {flagged_hours:,}")
+    print(f"Events per flagged station-hour: {_rate(event_fraction)}")
+
+    if events.empty:
+        print("No events.")
+        return
+
+    print()
+    print("EVENTS BY DOMINANT DETECTOR")
+    print(events["dominant_detector"].value_counts().to_string())
+    print()
+    print("DURATION HOURS")
+    print(f"median: {float(events['duration_hours'].median()):.2f}")
+    print(f"max: {int(events['duration_hours'].max())}")
+    print(f"events_duration_ge_24: {long_events}")
+    print()
+    print("DETECTOR CONCORDANCE")
+    print(events["detector_concordance"].value_counts().sort_index().to_string())
+    print()
+    print("TOP CHANNELS BY EVENT COUNT")
+    print(_event_count_table(events, "channel").to_string(index=False))
+    print()
+    print("TOP STATIONS BY EVENT COUNT")
+    print(_event_count_table(events, "station_id").to_string(index=False))
+    _print_known_fault_events(events)
+
+
 def main() -> None:
     df = pd.read_csv(MERGED_DATASET_PATH, parse_dates=["hour_utc"])
     channels = _numeric_channels(df)
     scores = compute_anomaly_scores(df, channels=channels)
+    events = build_events(scores)
 
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     scores.to_parquet(OUTPUT_PATH, index=False)
+    events.to_parquet(EVENT_OUTPUT_PATH, index=False)
 
     scored_channel_count = int(scores["channel"].nunique())
     print("STAGE 3 SCORE DIAGNOSTIC")
@@ -203,6 +303,7 @@ def main() -> None:
     _print_detector_contribution(scores)
     _print_baseline_sources(scores)
     _print_known_faults(scores)
+    _print_event_summary(events, scores)
 
 
 if __name__ == "__main__":
