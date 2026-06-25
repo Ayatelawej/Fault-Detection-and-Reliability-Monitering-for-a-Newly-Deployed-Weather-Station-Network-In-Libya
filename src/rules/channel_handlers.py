@@ -3,6 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.rules.config import SENSOR_GROUP_PREFIXES
+
 
 def encode_wind_direction(series: pd.Series) -> pd.DataFrame:
     radians = np.deg2rad(series.astype(float))
@@ -21,3 +23,17 @@ def log_transform_precip(series: pd.Series) -> pd.Series:
         index=series.index,
         name=series.name,
     )
+
+
+def sensor_group_for_channel(channel: str) -> str:
+    matches = [
+        prefix
+        for prefix in SENSOR_GROUP_PREFIXES
+        if channel.startswith(prefix)
+    ]
+
+    if not matches:
+        return "other"
+
+    prefix = max(matches, key=len)
+    return SENSOR_GROUP_PREFIXES[prefix]

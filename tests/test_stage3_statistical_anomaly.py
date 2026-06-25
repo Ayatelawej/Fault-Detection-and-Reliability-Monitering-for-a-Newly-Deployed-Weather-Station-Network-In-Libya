@@ -43,6 +43,24 @@ EVENT_OUTPUT_COLUMNS = [
     "min_rolling_variance",
     "reasons",
 ]
+EPISODE_BASE_HOUR = pd.Timestamp("2024-06-01 00:00:00", tz="UTC")
+EPISODE_OUTPUT_COLUMNS = [
+    "station_id",
+    "start_hour",
+    "end_hour",
+    "duration_hours",
+    "n_events",
+    "n_channels",
+    "affected_channels",
+    "n_sensor_groups",
+    "affected_sensor_groups",
+    "dominant_detector",
+    "detector_concordance",
+    "max_abs_zscore",
+    "max_iforest_score",
+    "min_rolling_variance",
+    "reasons",
+]
 
 
 def _assert_detection_frame(
@@ -296,6 +314,104 @@ def _events_output(max_gap_hours: int = 0) -> pd.DataFrame:
     from src.rules.events import build_events
 
     return build_events(_events_input_frame(), max_gap_hours=max_gap_hours)
+
+
+def _episode_event_row(
+    station_id: str,
+    channel: str,
+    start_offset: int,
+    duration_hours: int,
+    dominant_detector: str = "stuck",
+    detector_concordance: int = 1,
+    max_abs_zscore: float = 1.0,
+    max_iforest_score: float = 0.2,
+    min_rolling_variance: float = 0.0,
+    reasons: str = "stuck_variance_zero",
+) -> dict[str, object]:
+    start_hour = EPISODE_BASE_HOUR + pd.Timedelta(hours=start_offset)
+    end_hour = start_hour + pd.Timedelta(hours=duration_hours - 1)
+    return {
+        "station_id": station_id,
+        "channel": channel,
+        "start_hour": start_hour,
+        "end_hour": end_hour,
+        "duration_hours": duration_hours,
+        "dominant_detector": dominant_detector,
+        "detector_concordance": detector_concordance,
+        "max_abs_zscore": max_abs_zscore,
+        "max_iforest_score": max_iforest_score,
+        "min_rolling_variance": min_rolling_variance,
+        "reasons": reasons,
+    }
+
+
+def _episodes_input_frame() -> pd.DataFrame:
+    rows = [
+        _episode_event_row("STA_WIND", "windspeed_avg_kmh", 0, 50),
+        _episode_event_row("STA_WIND", "windgust_avg_kmh", 0, 49),
+        _episode_event_row("STA_WIND", "winddir_sin", 0, 51),
+        _episode_event_row("STA_OFFSET", "pressure_trend_hpa", 0, 500),
+        _episode_event_row("STA_OFFSET", "windspeed_avg_kmh", 200, 20),
+        _episode_event_row("STA_NO_OVERLAP", "temp_avg_c", 0, 1),
+        _episode_event_row("STA_NO_OVERLAP", "humidity_high_pct", 5, 1),
+        _episode_event_row("STA_A", "windspeed_avg_kmh", 0, 5),
+        _episode_event_row("STA_B", "windspeed_avg_kmh", 0, 5),
+        _episode_event_row("STA_THERMO", "temp_avg_c", 10, 5),
+        _episode_event_row("STA_THERMO", "humidity_high_pct", 10, 5),
+        _episode_event_row(
+            "STA_FEATURE",
+            "pressure_max_hpa",
+            20,
+            10,
+            dominant_detector="zscore",
+            max_abs_zscore=4.0,
+            max_iforest_score=0.4,
+            min_rolling_variance=0.5,
+            reasons="mad_high",
+        ),
+        _episode_event_row(
+            "STA_FEATURE",
+            "pressure_min_hpa",
+            20,
+            10,
+            dominant_detector="iforest",
+            max_abs_zscore=6.0,
+            max_iforest_score=0.9,
+            min_rolling_variance=0.1,
+            reasons="iforest_outlier",
+        ),
+        _episode_event_row(
+            "STA_FEATURE",
+            "pressure_trend_hpa",
+            20,
+            10,
+            dominant_detector="stuck",
+            max_abs_zscore=2.0,
+            max_iforest_score=0.3,
+            min_rolling_variance=0.3,
+            reasons="stuck_variance_zero",
+        ),
+        _episode_event_row(
+            "STA_SINGLE",
+            "uv_high",
+            40,
+            3,
+            dominant_detector="iforest",
+            max_iforest_score=1.2,
+            min_rolling_variance=np.nan,
+            reasons="iforest_outlier",
+        ),
+    ]
+    return pd.DataFrame(rows)
+
+
+def _episodes_output(onset_tolerance_hours: int = 6) -> pd.DataFrame:
+    from src.rules.episodes import build_episodes
+
+    return build_episodes(
+        _episodes_input_frame(),
+        onset_tolerance_hours=onset_tolerance_hours,
+    )
 
 
 class TestRobustZScoreContract:
@@ -764,3 +880,73 @@ class TestEventBuilderIntegration:
         result = _events_output()
 
         assert list(result.columns) == EVENT_OUTPUT_COLUMNS
+
+
+class TestEpisodeBuilderIntegration:
+    def test_build_episodes_merges_co_onset_overlapping_wind_events(self) -> None:
+        result = _episodes_output()
+        episode = result.loc[result["station_id"].eq("STA_WIND")].iloc[0]
+
+        assert result.loc[result["station_id"].eq("STA_WIND")].shape[0] == 1
+        assert int(episode["n_events"]) == 3
+        assert int(episode["n_channels"]) == 3
+        assert episode["affected_sensor_groups"] == "anemometer|wind_vane"
+        assert int(episode["n_sensor_groups"]) == 2
+
+    def test_build_episodes_protects_long_offset_from_late_overlap(self) -> None:
+        result = _episodes_output()
+        episodes = result.loc[result["station_id"].eq("STA_OFFSET")]
+
+        assert len(episodes) == 2
+        assert episodes["affected_channels"].tolist() == [
+            "pressure_trend_hpa",
+            "windspeed_avg_kmh",
+        ]
+
+    def test_build_episodes_requires_overlap_even_with_close_onsets(self) -> None:
+        result = _episodes_output()
+        episodes = result.loc[result["station_id"].eq("STA_NO_OVERLAP")]
+
+        assert len(episodes) == 2
+        assert episodes["duration_hours"].tolist() == [1, 1]
+
+    def test_build_episodes_never_spans_stations(self) -> None:
+        result = _episodes_output()
+        station_a = result.loc[result["station_id"].eq("STA_A")]
+        station_b = result.loc[result["station_id"].eq("STA_B")]
+
+        assert len(station_a) == 1
+        assert len(station_b) == 1
+        assert station_a.iloc[0]["affected_channels"] == "windspeed_avg_kmh"
+        assert station_b.iloc[0]["affected_channels"] == "windspeed_avg_kmh"
+
+    def test_build_episodes_maps_thermo_hygrometer_sensor_group(self) -> None:
+        result = _episodes_output()
+        episode = result.loc[result["station_id"].eq("STA_THERMO")].iloc[0]
+
+        assert episode["affected_sensor_groups"] == "thermo_hygrometer"
+        assert int(episode["n_sensor_groups"]) == 1
+
+    def test_build_episodes_aggregates_scores_and_reason_union(self) -> None:
+        result = _episodes_output()
+        episode = result.loc[result["station_id"].eq("STA_FEATURE")].iloc[0]
+
+        assert float(episode["max_abs_zscore"]) == pytest.approx(6.0)
+        assert float(episode["min_rolling_variance"]) == pytest.approx(0.1)
+        assert episode["reasons"] == (
+            "iforest_outlier|mad_high|stuck_variance_zero"
+        )
+        assert int(episode["detector_concordance"]) == 3
+
+    def test_build_episodes_preserves_single_isolated_event(self) -> None:
+        result = _episodes_output()
+        episode = result.loc[result["station_id"].eq("STA_SINGLE")].iloc[0]
+
+        assert int(episode["n_events"]) == 1
+        assert int(episode["n_channels"]) == 1
+        assert episode["affected_channels"] == "uv_high"
+
+    def test_build_episodes_returns_exact_columns(self) -> None:
+        result = _episodes_output()
+
+        assert list(result.columns) == EPISODE_OUTPUT_COLUMNS

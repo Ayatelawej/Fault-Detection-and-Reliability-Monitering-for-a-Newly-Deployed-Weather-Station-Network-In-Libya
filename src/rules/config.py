@@ -32,3 +32,14 @@ STUCK_IGNORE_ZERO_CHANNELS = [
     "windgust_low_kmh",
 ]
 STUCK_SKIP_CHANNELS = ["precip_total_mm"]
+SENSOR_GROUP_PREFIXES = {
+    "temp": "thermo_hygrometer",
+    "humidity": "thermo_hygrometer",
+    "windspeed": "anemometer",
+    "windgust": "anemometer",
+    "winddir": "wind_vane",
+    "precip": "rain_gauge",
+    "solar": "light_uv",
+    "uv": "light_uv",
+    "pressure": "barometer",
+}
