@@ -10,11 +10,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config.paths import MERGED_DATASET_PATH, PROCESSED_DIR
+from src.rules.episodes import build_episodes
 from src.rules.events import build_events
 from src.rules.score import compute_anomaly_scores
 
 OUTPUT_PATH = PROCESSED_DIR / "statistical_anomaly_scores.parquet"
 EVENT_OUTPUT_PATH = PROCESSED_DIR / "fault_events.parquet"
+EPISODE_OUTPUT_PATH = PROCESSED_DIR / "fault_episodes.parquet"
 METADATA_NUMERIC_COLUMNS = {
     "n_raw_records",
     "latitude",
@@ -267,20 +269,103 @@ def _print_event_summary(events: pd.DataFrame, scores: pd.DataFrame) -> None:
     _print_known_fault_events(events)
 
 
+def _episode_count_table(
+    episodes: pd.DataFrame,
+    column: str,
+    limit: int = 10,
+) -> pd.DataFrame:
+    return (
+        episodes[column]
+        .value_counts()
+        .head(limit)
+        .rename_axis(column)
+        .reset_index(name="n_episodes")
+    )
+
+
+def _print_known_fault_episodes(episodes: pd.DataFrame) -> None:
+    print()
+    print("KNOWN-FAULT EPISODES")
+    checks = [
+        ("ITRIPO33 wind", "ITRIPO33", {"anemometer", "wind_vane"}),
+        ("IBIRAL3 pressure", "IBIRAL3", {"barometer"}),
+        ("IMURQU7 precip", "IMURQU7", {"rain_gauge"}),
+    ]
+
+    for label, station_id, sensor_groups in checks:
+        station_frame = episodes.loc[episodes["station_id"].eq(station_id)]
+        group_mask = station_frame["affected_sensor_groups"].map(
+            lambda value: bool(set(str(value).split("|")) & sensor_groups)
+        )
+        frame = station_frame.loc[group_mask]
+        printable = frame.loc[
+            :,
+            [
+                "start_hour",
+                "duration_hours",
+                "affected_sensor_groups",
+            ],
+        ].sort_values("start_hour")
+        print(f"{label}: n_episodes={len(printable)}")
+        if printable.empty:
+            print("none")
+        else:
+            print(printable.to_string(index=False))
+
+
+def _print_episode_summary(episodes: pd.DataFrame, events: pd.DataFrame) -> None:
+    reduction = 1.0 - (len(episodes) / len(events)) if len(events) else 0.0
+
+    print()
+    print("EPISODE SUMMARY")
+    print(f"Total events: {len(events):,}")
+    print(f"Total episodes: {len(episodes):,}")
+    print(f"Event-to-episode reduction: {_rate(float(reduction))}")
+
+    if episodes.empty:
+        print("No episodes.")
+        return
+
+    print()
+    print("EPISODES BY SENSOR-GROUP COUNT")
+    print(episodes["n_sensor_groups"].value_counts().sort_index().to_string())
+    print()
+    print("TOP SENSOR-GROUP SIGNATURES BY EPISODE COUNT")
+    print(
+        _episode_count_table(
+            episodes,
+            "affected_sensor_groups",
+        ).to_string(index=False)
+    )
+    print()
+    print("EPISODE DURATION HOURS")
+    print(f"median: {float(episodes['duration_hours'].median()):.2f}")
+    print(f"max: {int(episodes['duration_hours'].max())}")
+    print(
+        "episodes_duration_ge_24: "
+        f"{int(episodes['duration_hours'].ge(24).sum())}"
+    )
+    _print_known_fault_episodes(episodes)
+
+
 def main() -> None:
     df = pd.read_csv(MERGED_DATASET_PATH, parse_dates=["hour_utc"])
     channels = _numeric_channels(df)
     scores = compute_anomaly_scores(df, channels=channels)
     events = build_events(scores)
+    episodes = build_episodes(events)
 
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     scores.to_parquet(OUTPUT_PATH, index=False)
     events.to_parquet(EVENT_OUTPUT_PATH, index=False)
+    episodes.to_parquet(EPISODE_OUTPUT_PATH, index=False)
 
     scored_channel_count = int(scores["channel"].nunique())
     print("STAGE 3 SCORE DIAGNOSTIC")
     print(f"Input path: {MERGED_DATASET_PATH}")
     print(f"Output path: {OUTPUT_PATH}")
+    print(f"Event output path: {EVENT_OUTPUT_PATH}")
+    print(f"Episode output path: {EPISODE_OUTPUT_PATH}")
     print(f"Input rows: {len(df):,}")
     print(f"Input scored channels: {len(channels)}")
     print(f"Output scored channels: {scored_channel_count}")
@@ -304,6 +389,7 @@ def main() -> None:
     _print_baseline_sources(scores)
     _print_known_faults(scores)
     _print_event_summary(events, scores)
+    _print_episode_summary(episodes, events)
 
 
 if __name__ == "__main__":
