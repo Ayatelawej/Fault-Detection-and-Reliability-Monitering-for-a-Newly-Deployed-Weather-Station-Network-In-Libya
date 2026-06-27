@@ -10,6 +10,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config.paths import MERGED_DATASET_PATH, PROCESSED_DIR
+from src.rules.clustering import (
+    build_episode_features,
+    cluster_episodes,
+    cluster_features,
+)
+from src.rules.config import HDBSCAN_MIN_CLUSTER_SIZE, HDBSCAN_MIN_SAMPLES
 from src.rules.episodes import build_episodes
 from src.rules.events import build_events
 from src.rules.score import compute_anomaly_scores
@@ -17,6 +23,7 @@ from src.rules.score import compute_anomaly_scores
 OUTPUT_PATH = PROCESSED_DIR / "statistical_anomaly_scores.parquet"
 EVENT_OUTPUT_PATH = PROCESSED_DIR / "fault_events.parquet"
 EPISODE_OUTPUT_PATH = PROCESSED_DIR / "fault_episodes.parquet"
+CLUSTER_OUTPUT_PATH = PROCESSED_DIR / "fault_clusters.parquet"
 METADATA_NUMERIC_COLUMNS = {
     "n_raw_records",
     "latitude",
@@ -348,17 +355,193 @@ def _print_episode_summary(episodes: pd.DataFrame, events: pd.DataFrame) -> None
     _print_known_fault_episodes(episodes)
 
 
+def _cluster_sensor_group_purity(
+    episodes: pd.DataFrame,
+    labels: np.ndarray,
+) -> float:
+    label_series = pd.Series(labels, index=episodes.index)
+    purities: list[float] = []
+
+    for label in sorted(set(labels) - {-1}):
+        groups = episodes.loc[
+            label_series.eq(label),
+            "affected_sensor_groups",
+        ].astype(str)
+        if groups.empty:
+            continue
+
+        purities.append(float(groups.value_counts(normalize=True).iloc[0]))
+
+    return float(np.mean(purities)) if purities else np.nan
+
+
+def _cluster_sweep_row(
+    episodes: pd.DataFrame,
+    features: pd.DataFrame,
+    min_cluster_size: int,
+    min_samples: int,
+) -> dict[str, object]:
+    labels, _ = cluster_features(
+        features,
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+    )
+    n_episodes = len(episodes)
+    non_noise = labels[labels != -1]
+    non_noise_labels = set(non_noise)
+    cluster_sizes = pd.Series(non_noise).value_counts()
+    noise_pct = float((labels == -1).mean()) if n_episodes else 0.0
+    biggest_cluster_pct = (
+        float(cluster_sizes.max() / n_episodes)
+        if n_episodes and not cluster_sizes.empty
+        else 0.0
+    )
+    label_series = pd.Series(labels, index=episodes.index)
+    itripo33_mask = (
+        episodes["station_id"].eq("ITRIPO33")
+        & episodes["duration_hours"].isin([27, 72, 83])
+    )
+    itripo33_clusters = {
+        int(label)
+        for label in label_series.loc[itripo33_mask]
+        if int(label) != -1
+    }
+    imurqu7_mask = (
+        episodes["station_id"].eq("IMURQU7")
+        & episodes["affected_sensor_groups"].astype(str).str.contains(
+            "rain_gauge",
+            regex=False,
+        )
+    )
+    imurqu7_recovered = bool(label_series.loc[imurqu7_mask].ne(-1).any())
+
+    return {
+        "mcs": min_cluster_size,
+        "ms": min_samples,
+        "n_clusters": len(non_noise_labels),
+        "noise_pct": noise_pct,
+        "biggest_cluster_pct": biggest_cluster_pct,
+        "mean_sensor_group_purity": _cluster_sensor_group_purity(
+            episodes,
+            labels,
+        ),
+        "implied_review_units": int(
+            len(non_noise_labels) * 7 + np.ceil(noise_pct * n_episodes * 0.02)
+        ),
+        "itripo33_clusters": len(itripo33_clusters),
+        "imurqu7_recovered": imurqu7_recovered,
+    }
+
+
+def _cluster_parameter_sweep(
+    episodes: pd.DataFrame,
+    features: pd.DataFrame,
+) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+
+    for min_cluster_size in [10, 15, 20, 30, 50]:
+        for min_samples in [1, 5, 10]:
+            if min_samples > min_cluster_size:
+                continue
+
+            rows.append(
+                _cluster_sweep_row(
+                    episodes,
+                    features,
+                    min_cluster_size=min_cluster_size,
+                    min_samples=min_samples,
+                )
+            )
+
+    return pd.DataFrame(rows).sort_values(["mcs", "ms"]).reset_index(drop=True)
+
+
+def _cluster_summary_table(clustered: pd.DataFrame) -> pd.DataFrame:
+    non_noise = clustered.loc[clustered["cluster_label"].ne(-1)]
+
+    if non_noise.empty:
+        return pd.DataFrame(
+            columns=[
+                "cluster_label",
+                "n_episodes",
+                "modal_affected_sensor_groups",
+            ]
+        )
+
+    grouped = non_noise.groupby("cluster_label")
+    summary = pd.DataFrame(
+        {
+            "n_episodes": grouped.size(),
+            "modal_affected_sensor_groups": grouped[
+                "affected_sensor_groups"
+            ].agg(lambda values: values.astype(str).value_counts().idxmax()),
+        }
+    )
+    return (
+        summary.reset_index()
+        .sort_values(["n_episodes", "cluster_label"], ascending=[False, True])
+        .head(12)
+    )
+
+
+def _print_cluster_sweep(
+    episodes: pd.DataFrame,
+    features: pd.DataFrame,
+) -> None:
+    print()
+    print("CLUSTER PARAMETER SWEEP")
+    sweep = _cluster_parameter_sweep(episodes, features)
+    print(
+        sweep.to_string(
+            index=False,
+            formatters={
+                "noise_pct": _rate,
+                "biggest_cluster_pct": _rate,
+                "mean_sensor_group_purity": lambda value: (
+                    "nan" if pd.isna(value) else f"{float(value):.4f}"
+                ),
+            },
+        )
+    )
+
+
+def _print_chosen_cluster_summary(clustered: pd.DataFrame) -> None:
+    labels = clustered["cluster_label"]
+    non_noise_labels = set(labels) - {-1}
+    noise_count = int(labels.eq(-1).sum())
+
+    print()
+    print("CHOSEN CLUSTER SUMMARY")
+    print(
+        "setting: "
+        f"min_cluster_size={HDBSCAN_MIN_CLUSTER_SIZE}, "
+        f"min_samples={HDBSCAN_MIN_SAMPLES}"
+    )
+    print(f"total_clusters: {len(non_noise_labels)}")
+    print(f"noise_count: {noise_count}")
+    print()
+    print("TOP CLUSTERS BY SIZE")
+    summary = _cluster_summary_table(clustered)
+    if summary.empty:
+        print("none")
+    else:
+        print(summary.to_string(index=False))
+
+
 def main() -> None:
     df = pd.read_csv(MERGED_DATASET_PATH, parse_dates=["hour_utc"])
     channels = _numeric_channels(df)
     scores = compute_anomaly_scores(df, channels=channels)
     events = build_events(scores)
     episodes = build_episodes(events)
+    _, episode_features = build_episode_features(episodes)
+    clustered = cluster_episodes(episodes)
 
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     scores.to_parquet(OUTPUT_PATH, index=False)
     events.to_parquet(EVENT_OUTPUT_PATH, index=False)
     episodes.to_parquet(EPISODE_OUTPUT_PATH, index=False)
+    clustered.to_parquet(CLUSTER_OUTPUT_PATH, index=False)
 
     scored_channel_count = int(scores["channel"].nunique())
     print("STAGE 3 SCORE DIAGNOSTIC")
@@ -366,6 +549,7 @@ def main() -> None:
     print(f"Output path: {OUTPUT_PATH}")
     print(f"Event output path: {EVENT_OUTPUT_PATH}")
     print(f"Episode output path: {EPISODE_OUTPUT_PATH}")
+    print(f"Cluster output path: {CLUSTER_OUTPUT_PATH}")
     print(f"Input rows: {len(df):,}")
     print(f"Input scored channels: {len(channels)}")
     print(f"Output scored channels: {scored_channel_count}")
@@ -390,6 +574,8 @@ def main() -> None:
     _print_known_faults(scores)
     _print_event_summary(events, scores)
     _print_episode_summary(episodes, events)
+    _print_cluster_sweep(episodes, episode_features)
+    _print_chosen_cluster_summary(clustered)
 
 
 if __name__ == "__main__":
