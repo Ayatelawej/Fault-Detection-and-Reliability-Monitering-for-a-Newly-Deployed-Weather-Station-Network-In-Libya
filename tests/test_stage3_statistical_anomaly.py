@@ -61,6 +61,26 @@ EPISODE_OUTPUT_COLUMNS = [
     "min_rolling_variance",
     "reasons",
 ]
+CLUSTER_BASE_HOUR = pd.Timestamp("2024-07-01 00:00:00", tz="UTC")
+CLUSTER_ID_COLUMNS = ["station_id", "start_hour", "end_hour"]
+CLUSTER_FEATURE_COLUMNS = [
+    "sg_anemometer",
+    "sg_barometer",
+    "sg_light_uv",
+    "sg_rain_gauge",
+    "sg_thermo_hygrometer",
+    "sg_wind_vane",
+    "sg_other",
+    "det_iforest",
+    "det_stuck",
+    "det_zscore",
+    "n_sensor_groups",
+    "detector_concordance",
+    "log_duration",
+    "max_abs_zscore",
+    "max_iforest_score",
+    "min_rolling_variance",
+]
 
 
 def _assert_detection_frame(
@@ -411,6 +431,126 @@ def _episodes_output(onset_tolerance_hours: int = 6) -> pd.DataFrame:
     return build_episodes(
         _episodes_input_frame(),
         onset_tolerance_hours=onset_tolerance_hours,
+    )
+
+
+def _cluster_episode_row(
+    station_id: str,
+    start_offset: int,
+    duration_hours: int,
+    affected_channels: str,
+    affected_sensor_groups: str,
+    dominant_detector: str,
+    detector_concordance: int,
+    max_abs_zscore: float,
+    max_iforest_score: float,
+    min_rolling_variance: float,
+    reasons: str,
+) -> dict[str, object]:
+    start_hour = CLUSTER_BASE_HOUR + pd.Timedelta(hours=start_offset)
+    end_hour = start_hour + pd.Timedelta(hours=duration_hours - 1)
+    return {
+        "station_id": station_id,
+        "start_hour": start_hour,
+        "end_hour": end_hour,
+        "duration_hours": duration_hours,
+        "n_events": len(affected_channels.split("|")),
+        "n_channels": len(affected_channels.split("|")),
+        "affected_channels": affected_channels,
+        "n_sensor_groups": len(affected_sensor_groups.split("|")),
+        "affected_sensor_groups": affected_sensor_groups,
+        "dominant_detector": dominant_detector,
+        "detector_concordance": detector_concordance,
+        "max_abs_zscore": max_abs_zscore,
+        "max_iforest_score": max_iforest_score,
+        "min_rolling_variance": min_rolling_variance,
+        "reasons": reasons,
+    }
+
+
+def _cluster_episodes_input_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            _cluster_episode_row(
+                "STA_WIND",
+                0,
+                72,
+                "windspeed_avg_kmh|winddir_sin",
+                "anemometer|wind_vane",
+                "stuck",
+                1,
+                3.2,
+                0.4,
+                0.0,
+                "stuck_variance_zero",
+            ),
+            _cluster_episode_row(
+                "STA_RAIN",
+                90,
+                12,
+                "precip_total_mm",
+                "rain_gauge",
+                "iforest",
+                1,
+                0.0,
+                1.4,
+                0.2,
+                "iforest_outlier",
+            ),
+            _cluster_episode_row(
+                "STA_PRESSURE",
+                140,
+                9,
+                "pressure_max_hpa",
+                "barometer",
+                "zscore",
+                1,
+                8.1,
+                0.2,
+                0.4,
+                "mad_high",
+            ),
+            _cluster_episode_row(
+                "STA_LIGHT",
+                180,
+                4,
+                "uv_high|solar_radiation_high_wm2",
+                "light_uv",
+                "iforest",
+                2,
+                1.2,
+                1.1,
+                0.3,
+                "iforest_outlier|mad_high",
+            ),
+            _cluster_episode_row(
+                "STA_THERMO",
+                220,
+                18,
+                "temp_avg_c|humidity_avg_pct",
+                "thermo_hygrometer",
+                "stuck",
+                2,
+                2.4,
+                0.8,
+                0.0,
+                "iforest_outlier|stuck_variance_zero",
+            ),
+            _cluster_episode_row(
+                "STA_OTHER",
+                260,
+                3,
+                "custom_probe",
+                "mystery_sensor",
+                "iforest",
+                1,
+                1.0,
+                0.7,
+                0.5,
+                "iforest_outlier",
+            ),
+        ],
+        columns=EPISODE_OUTPUT_COLUMNS,
     )
 
 
@@ -950,3 +1090,139 @@ class TestEpisodeBuilderIntegration:
         result = _episodes_output()
 
         assert list(result.columns) == EPISODE_OUTPUT_COLUMNS
+
+
+class TestEpisodeClusteringIntegration:
+    def test_build_episode_features_encodes_multi_sensor_group_signature(
+        self,
+    ) -> None:
+        from src.rules.clustering import build_episode_features
+
+        _, features = build_episode_features(_cluster_episodes_input_frame())
+        row = features.iloc[0]
+
+        assert int(row["sg_anemometer"]) == 1
+        assert int(row["sg_wind_vane"]) == 1
+        assert int(row["sg_barometer"]) == 0
+        assert int(row["sg_light_uv"]) == 0
+        assert int(row["sg_rain_gauge"]) == 0
+        assert int(row["sg_thermo_hygrometer"]) == 0
+        assert int(row["sg_other"]) == 0
+
+    def test_build_episode_features_encodes_detector_and_log_duration(
+        self,
+    ) -> None:
+        from src.rules.clustering import build_episode_features
+
+        _, features = build_episode_features(_cluster_episodes_input_frame())
+        row = features.iloc[0]
+
+        assert int(row["det_stuck"]) == 1
+        assert int(row["det_iforest"]) == 0
+        assert int(row["det_zscore"]) == 0
+        assert float(row["log_duration"]) == pytest.approx(np.log1p(72))
+
+    def test_build_episode_features_returns_exact_ordered_columns(self) -> None:
+        from src.rules.clustering import build_episode_features
+
+        ids, features = build_episode_features(_cluster_episodes_input_frame())
+
+        assert list(ids.columns) == CLUSTER_ID_COLUMNS
+        assert list(features.columns) == CLUSTER_FEATURE_COLUMNS
+
+    def test_cluster_features_separates_three_tight_groups(self) -> None:
+        from src.rules.clustering import cluster_features
+
+        base = np.column_stack(
+            [
+                np.linspace(0.0, 0.07, 8),
+                np.linspace(0.02, 0.09, 8),
+            ]
+        )
+        first = base
+        second = base + np.array([20.0, 20.0])
+        third = base + np.array([-20.0, 20.0])
+        X = np.vstack([first, second, third])
+
+        labels, probabilities = cluster_features(
+            X,
+            min_cluster_size=5,
+            min_samples=3,
+        )
+        non_noise_labels = set(labels) - {-1}
+
+        assert len(non_noise_labels) == 3
+        assert -1 not in set(labels)
+        assert len(set(labels[:8])) == 1
+        assert len(set(labels[8:16])) == 1
+        assert len(set(labels[16:])) == 1
+        assert np.all((probabilities >= 0.0) & (probabilities <= 1.0))
+
+    def test_cluster_features_marks_isolated_point_as_noise(self) -> None:
+        from src.rules.clustering import cluster_features
+
+        blob = np.column_stack(
+            [
+                np.linspace(0.0, 0.15, 16),
+                np.linspace(0.03, 0.18, 16),
+            ]
+        )
+        isolated = np.array([[25.0, -25.0]])
+        X = np.vstack([blob, isolated])
+
+        labels, _ = cluster_features(
+            X,
+            min_cluster_size=5,
+            min_samples=3,
+        )
+
+        assert int(labels[-1]) == -1
+
+    def test_cluster_features_is_deterministic_for_fixed_input(self) -> None:
+        from src.rules.clustering import cluster_features
+
+        group = np.column_stack(
+            [
+                np.linspace(0.0, 0.07, 8),
+                np.linspace(0.02, 0.09, 8),
+            ]
+        )
+        X = np.vstack(
+            [
+                group,
+                group + np.array([15.0, 15.0]),
+                group + np.array([-15.0, 15.0]),
+            ]
+        )
+
+        first_labels, _ = cluster_features(
+            X,
+            min_cluster_size=5,
+            min_samples=3,
+        )
+        second_labels, _ = cluster_features(
+            X,
+            min_cluster_size=5,
+            min_samples=3,
+        )
+
+        np.testing.assert_array_equal(first_labels, second_labels)
+
+    def test_cluster_episodes_preserves_rows_and_adds_cluster_columns(
+        self,
+    ) -> None:
+        from src.rules.clustering import cluster_episodes
+
+        episodes = _cluster_episodes_input_frame()
+        result = cluster_episodes(
+            episodes,
+            min_cluster_size=5,
+            min_samples=3,
+        )
+
+        assert len(result) == len(episodes)
+        assert set(episodes.columns) <= set(result.columns)
+        assert "cluster_label" in result.columns
+        assert "cluster_probability" in result.columns
+        assert pd.api.types.is_integer_dtype(result["cluster_label"])
+        assert pd.api.types.is_float_dtype(result["cluster_probability"])
