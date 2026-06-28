@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.rules.config import REVIEW_SUSTAINED_NOISE_HOURS
+
 
 OUTPUT_COLUMNS = [
     "review_id",
@@ -100,6 +102,7 @@ def build_review_queue(
     reps_per_cluster: int = 5,
     boundary_per_cluster: int = 2,
     noise_sample: int = 20,
+    sustained_noise_hours: int = REVIEW_SUSTAINED_NOISE_HOURS,
 ) -> pd.DataFrame:
     rows: list[pd.DataFrame] = []
     non_noise = clusters_df.loc[clusters_df["cluster_label"].ge(0)]
@@ -113,14 +116,34 @@ def build_review_queue(
             )
         )
 
-    noise = clusters_df.loc[clusters_df["cluster_label"].eq(-1)].sort_values(
-        ["max_abs_zscore", "start_hour"],
-        ascending=[False, True],
-    )
+    noise = clusters_df.loc[clusters_df["cluster_label"].eq(-1)]
     if not noise.empty:
+        sustained_noise = noise.loc[
+            pd.to_numeric(
+                noise["duration_hours"],
+                errors="coerce",
+            ).ge(sustained_noise_hours)
+        ].sort_values(
+            ["duration_hours", "start_hour"],
+            ascending=[False, True],
+        )
+        remaining_noise = noise.drop(index=sustained_noise.index).sort_values(
+            ["max_abs_zscore", "start_hour"],
+            ascending=[False, True],
+        )
+
+        if not sustained_noise.empty:
+            rows.append(
+                _with_review_fields(
+                    sustained_noise,
+                    "noise_sustained",
+                    len(noise),
+                )
+            )
+
         rows.append(
             _with_review_fields(
-                noise.head(min(noise_sample, len(noise))),
+                remaining_noise.head(min(noise_sample, len(remaining_noise))),
                 "noise_check",
                 len(noise),
             )
@@ -135,20 +158,6 @@ def build_review_queue(
         result["needs_5min_confirmation"] = pd.Series(dtype="bool")
         result["label"] = pd.Series(dtype="object")
 
-    role_order = {"representative": 0, "boundary": 1, "noise_check": 2}
-    result["_role_order"] = result["role"].map(role_order)
-    result["_is_noise"] = result["cluster_label"].eq(-1)
-    result = result.sort_values(
-        [
-            "_is_noise",
-            "cluster_label",
-            "_role_order",
-            "cluster_probability",
-            "max_abs_zscore",
-            "start_hour",
-        ],
-        ascending=[True, True, True, False, False, True],
-    ).reset_index(drop=True)
     result["review_id"] = range(1, len(result) + 1)
 
     return result.loc[:, OUTPUT_COLUMNS].reset_index(drop=True)
@@ -220,11 +229,27 @@ def main() -> None:
     print(f"Output path: {REVIEW_QUEUE_PATH}")
     print(f"Total review rows: {len(queue):,}")
     print("Counts by role:")
-    for role in ["representative", "boundary", "noise_check"]:
+    for role in ["representative", "boundary", "noise_sustained", "noise_check"]:
         print(f"{role}: {int(role_counts.get(role, 0))}")
     print(f"Distinct non-noise clusters represented: {represented_clusters}")
     print(f"needs_5min_confirmation rows: {len(needs_5min):,}")
     print(f"needs_5min_confirmation clusters: {needs_5min_clusters}")
+
+    sustained_noise = queue.loc[
+        queue["role"].eq("noise_sustained"),
+        [
+            "station_id",
+            "duration_hours",
+            "affected_sensor_groups",
+            "needs_5min_confirmation",
+        ],
+    ]
+    print()
+    print("NOISE SUSTAINED ROWS")
+    if sustained_noise.empty:
+        print("none")
+    else:
+        print(sustained_noise.to_string(index=False))
 
     _print_representatives(clusters, queue, "ITRIPO33")
     _print_representatives(clusters, queue, "IMURQU7")

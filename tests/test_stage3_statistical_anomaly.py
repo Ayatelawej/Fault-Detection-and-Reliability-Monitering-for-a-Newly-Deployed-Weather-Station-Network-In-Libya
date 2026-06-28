@@ -673,6 +673,26 @@ def _review_queue_input_frame() -> pd.DataFrame:
             )
         )
 
+    sustained_noise = [
+        ("STA_LONG_NOISE_A", 200, 72, "stuck", "stuck_variance_zero"),
+        ("STA_LONG_NOISE_B", 201, 48, "iforest", "iforest_outlier"),
+        ("STA_LONG_NOISE_C", 202, 24, "zscore", "mad_high"),
+    ]
+    for station_id, start_offset, duration_hours, detector, reasons in sustained_noise:
+        rows.append(
+            _review_queue_row(
+                station_id,
+                start_offset,
+                -1,
+                0.0,
+                10.0 + duration_hours,
+                dominant_detector=detector,
+                reasons=reasons,
+                affected_sensor_groups="anemometer|wind_vane",
+                duration_hours=duration_hours,
+            )
+        )
+
     return pd.DataFrame(rows)
 
 
@@ -1432,6 +1452,92 @@ class TestReviewQueueIntegration:
             list(np.arange(100.0, 80.0, -1.0))
         )
         assert len(uncapped_noise) == 30
+
+    def test_build_review_queue_routes_long_noise_to_sustained_role(self) -> None:
+        from src.rules.review_queue import build_review_queue
+
+        result = build_review_queue(
+            _review_queue_input_frame(),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=20,
+        )
+        sustained = result.loc[result["role"].eq("noise_sustained")]
+
+        assert len(sustained) == 3
+        assert set(sustained["station_id"]) == {
+            "STA_LONG_NOISE_A",
+            "STA_LONG_NOISE_B",
+            "STA_LONG_NOISE_C",
+        }
+        assert sustained["duration_hours"].ge(24).all()
+
+    def test_build_review_queue_excludes_sustained_noise_from_noise_check(
+        self,
+    ) -> None:
+        from src.rules.review_queue import build_review_queue
+
+        result = build_review_queue(
+            _review_queue_input_frame(),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=20,
+        )
+        sustained = result.loc[result["role"].eq("noise_sustained")]
+        noise_check = result.loc[result["role"].eq("noise_check")]
+        sustained_keys = set(zip(sustained["station_id"], sustained["start_hour"]))
+        noise_check_keys = set(zip(noise_check["station_id"], noise_check["start_hour"]))
+
+        assert sustained_keys.isdisjoint(noise_check_keys)
+
+    def test_build_review_queue_sustained_noise_is_not_capped(self) -> None:
+        from src.rules.review_queue import build_review_queue
+
+        result = build_review_queue(
+            _review_queue_input_frame(),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=1,
+        )
+
+        assert result["role"].eq("noise_sustained").sum() == 3
+        assert result["role"].eq("noise_check").sum() == 1
+
+    def test_build_review_queue_orders_sustained_noise_before_noise_check(
+        self,
+    ) -> None:
+        from src.rules.review_queue import build_review_queue
+
+        result = build_review_queue(
+            _review_queue_input_frame(),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=20,
+        )
+        non_noise = result.loc[result["cluster_label"].ne(-1)]
+        sustained = result.loc[result["role"].eq("noise_sustained")]
+        noise_check = result.loc[result["role"].eq("noise_check")]
+
+        assert sustained["review_id"].min() > non_noise["review_id"].max()
+        assert sustained["review_id"].max() < noise_check["review_id"].min()
+        assert sustained["duration_hours"].tolist() == [72, 48, 24]
+
+    def test_build_review_queue_flags_sustained_stuck_noise_for_5min(
+        self,
+    ) -> None:
+        from src.rules.review_queue import build_review_queue
+
+        result = build_review_queue(
+            _review_queue_input_frame(),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=20,
+        )
+        sustained_stuck = result.loc[
+            result["station_id"].eq("STA_LONG_NOISE_A")
+        ].iloc[0]
+
+        assert bool(sustained_stuck["needs_5min_confirmation"])
 
     def test_build_review_queue_flags_5min_confirmation_candidates(self) -> None:
         from src.rules.review_queue import build_review_queue
