@@ -81,6 +81,28 @@ CLUSTER_FEATURE_COLUMNS = [
     "max_iforest_score",
     "min_rolling_variance",
 ]
+REVIEW_BASE_HOUR = pd.Timestamp("2024-08-01 00:00:00", tz="UTC")
+REVIEW_QUEUE_COLUMNS = [
+    "review_id",
+    "cluster_label",
+    "cluster_size",
+    "role",
+    "needs_5min_confirmation",
+    "station_id",
+    "start_hour",
+    "end_hour",
+    "duration_hours",
+    "affected_sensor_groups",
+    "n_sensor_groups",
+    "dominant_detector",
+    "detector_concordance",
+    "max_abs_zscore",
+    "max_iforest_score",
+    "min_rolling_variance",
+    "reasons",
+    "cluster_probability",
+    "label",
+]
 
 
 def _assert_detection_frame(
@@ -552,6 +574,106 @@ def _cluster_episodes_input_frame() -> pd.DataFrame:
         ],
         columns=EPISODE_OUTPUT_COLUMNS,
     )
+
+
+def _review_queue_row(
+    station_id: str,
+    start_offset: int,
+    cluster_label: int,
+    cluster_probability: float,
+    max_abs_zscore: float,
+    dominant_detector: str = "iforest",
+    reasons: str = "iforest_outlier",
+    affected_sensor_groups: str = "anemometer",
+    duration_hours: int = 1,
+) -> dict[str, object]:
+    start_hour = REVIEW_BASE_HOUR + pd.Timedelta(hours=start_offset)
+    end_hour = start_hour + pd.Timedelta(hours=duration_hours - 1)
+    return {
+        "station_id": station_id,
+        "start_hour": start_hour,
+        "end_hour": end_hour,
+        "duration_hours": duration_hours,
+        "affected_sensor_groups": affected_sensor_groups,
+        "n_sensor_groups": len(affected_sensor_groups.split("|")),
+        "dominant_detector": dominant_detector,
+        "detector_concordance": 1,
+        "max_abs_zscore": max_abs_zscore,
+        "max_iforest_score": max_abs_zscore / 10.0,
+        "min_rolling_variance": 0.0 if dominant_detector == "stuck" else 0.2,
+        "reasons": reasons,
+        "cluster_label": cluster_label,
+        "cluster_probability": cluster_probability,
+    }
+
+
+def _review_queue_input_frame() -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    cluster_two_probabilities = [
+        0.91,
+        0.88,
+        0.77,
+        0.65,
+        0.51,
+        0.42,
+        0.35,
+        0.24,
+        0.12,
+        0.03,
+    ]
+
+    for index, probability in enumerate(cluster_two_probabilities):
+        rows.append(
+            _review_queue_row(
+                "STA_CLUSTER_2",
+                index,
+                2,
+                probability,
+                5.0 + index,
+                dominant_detector="stuck" if index == 0 else "iforest",
+                reasons=(
+                    "stuck_variance_zero"
+                    if index == 0
+                    else "iforest_outlier"
+                ),
+                affected_sensor_groups="anemometer",
+                duration_hours=24 if index == 0 else 1,
+            )
+        )
+
+    for index, probability in enumerate([0.82, 0.61, 0.44]):
+        rows.append(
+            _review_queue_row(
+                "STA_CLUSTER_5",
+                50 + index,
+                5,
+                probability,
+                3.0 + index,
+                dominant_detector="iforest",
+                reasons=(
+                    "mad_high|stuck_variance_zero"
+                    if index == 1
+                    else "iforest_outlier"
+                ),
+                affected_sensor_groups="rain_gauge",
+            )
+        )
+
+    for index in range(30):
+        rows.append(
+            _review_queue_row(
+                f"STA_NOISE_{index:02d}",
+                100 + index,
+                -1,
+                0.0,
+                100.0 - index,
+                dominant_detector="iforest",
+                reasons="iforest_outlier",
+                affected_sensor_groups="barometer",
+            )
+        )
+
+    return pd.DataFrame(rows)
 
 
 class TestRobustZScoreContract:
@@ -1226,3 +1348,158 @@ class TestEpisodeClusteringIntegration:
         assert "cluster_probability" in result.columns
         assert pd.api.types.is_integer_dtype(result["cluster_label"])
         assert pd.api.types.is_float_dtype(result["cluster_probability"])
+
+
+class TestReviewQueueIntegration:
+    def test_build_review_queue_selects_top_representatives(self) -> None:
+        from src.rules.review_queue import build_review_queue
+
+        result = build_review_queue(
+            _review_queue_input_frame(),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=20,
+        )
+        representatives = result.loc[
+            result["cluster_label"].eq(2)
+            & result["role"].eq("representative")
+        ]
+
+        assert len(representatives) == 5
+        assert representatives["cluster_probability"].tolist() == pytest.approx(
+            [0.91, 0.88, 0.77, 0.65, 0.51]
+        )
+
+    def test_build_review_queue_selects_low_probability_boundaries(self) -> None:
+        from src.rules.review_queue import build_review_queue
+
+        result = build_review_queue(
+            _review_queue_input_frame(),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=20,
+        )
+        cluster = result.loc[result["cluster_label"].eq(2)]
+        representatives = cluster.loc[cluster["role"].eq("representative")]
+        boundaries = cluster.loc[cluster["role"].eq("boundary")]
+        representative_keys = set(
+            zip(representatives["station_id"], representatives["start_hour"])
+        )
+        boundary_keys = set(zip(boundaries["station_id"], boundaries["start_hour"]))
+
+        assert len(boundaries) == 2
+        assert boundaries["cluster_probability"].tolist() == pytest.approx(
+            [0.12, 0.03]
+        )
+        assert representative_keys.isdisjoint(boundary_keys)
+
+    def test_build_review_queue_small_cluster_has_no_boundaries(self) -> None:
+        from src.rules.review_queue import build_review_queue
+
+        result = build_review_queue(
+            _review_queue_input_frame(),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=20,
+        )
+        cluster = result.loc[result["cluster_label"].eq(5)]
+
+        assert cluster["role"].eq("representative").sum() == 3
+        assert cluster["role"].eq("boundary").sum() == 0
+        assert not cluster[["station_id", "start_hour"]].duplicated().any()
+
+    def test_build_review_queue_samples_noise_by_zscore_cap(self) -> None:
+        from src.rules.review_queue import build_review_queue
+
+        capped = build_review_queue(
+            _review_queue_input_frame(),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=20,
+        )
+        uncapped = build_review_queue(
+            _review_queue_input_frame(),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=50,
+        )
+        capped_noise = capped.loc[capped["role"].eq("noise_check")]
+        uncapped_noise = uncapped.loc[uncapped["role"].eq("noise_check")]
+
+        assert len(capped_noise) == 20
+        assert capped_noise["cluster_label"].eq(-1).all()
+        assert capped_noise["max_abs_zscore"].tolist() == pytest.approx(
+            list(np.arange(100.0, 80.0, -1.0))
+        )
+        assert len(uncapped_noise) == 30
+
+    def test_build_review_queue_flags_5min_confirmation_candidates(self) -> None:
+        from src.rules.review_queue import build_review_queue
+
+        result = build_review_queue(
+            _review_queue_input_frame(),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=20,
+        )
+        stuck_detector = result.loc[
+            result["station_id"].eq("STA_CLUSTER_2")
+            & result["start_hour"].eq(REVIEW_BASE_HOUR)
+        ].iloc[0]
+        stuck_reason = result.loc[
+            result["station_id"].eq("STA_CLUSTER_5")
+            & result["start_hour"].eq(REVIEW_BASE_HOUR + pd.Timedelta(hours=51))
+        ].iloc[0]
+        iforest_only = result.loc[
+            result["station_id"].eq("STA_CLUSTER_2")
+            & result["start_hour"].eq(REVIEW_BASE_HOUR + pd.Timedelta(hours=1))
+        ].iloc[0]
+
+        assert bool(stuck_detector["needs_5min_confirmation"])
+        assert bool(stuck_reason["needs_5min_confirmation"])
+        assert not bool(iforest_only["needs_5min_confirmation"])
+
+    def test_build_review_queue_returns_exact_columns_and_empty_labels(self) -> None:
+        from src.rules.review_queue import build_review_queue
+
+        result = build_review_queue(
+            _review_queue_input_frame(),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=20,
+        )
+
+        assert list(result.columns) == REVIEW_QUEUE_COLUMNS
+        assert result["label"].eq("").all()
+
+    def test_build_review_queue_never_duplicates_episode_rows(self) -> None:
+        from src.rules.review_queue import build_review_queue
+
+        result = build_review_queue(
+            _review_queue_input_frame(),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=20,
+        )
+
+        assert not result[["station_id", "start_hour"]].duplicated().any()
+
+    def test_build_review_queue_orders_non_noise_before_noise_and_roles(
+        self,
+    ) -> None:
+        from src.rules.review_queue import build_review_queue
+
+        result = build_review_queue(
+            _review_queue_input_frame(),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=20,
+        )
+        non_noise = result.loc[result["cluster_label"].ne(-1)]
+        noise = result.loc[result["role"].eq("noise_check")]
+        cluster = result.loc[result["cluster_label"].eq(2)]
+        representatives = cluster.loc[cluster["role"].eq("representative")]
+        boundaries = cluster.loc[cluster["role"].eq("boundary")]
+
+        assert noise["review_id"].min() > non_noise["review_id"].max()
+        assert representatives["review_id"].max() < boundaries["review_id"].min()
