@@ -1,8 +1,8 @@
-# Phase 1 Data Audit
+# Dataset Audit
 
 ## Dataset checkpoint
 
-These numbers come from the current Phase 1 audit outputs in
+These numbers come from the current audit outputs in
 `data/processed/data_audit_summary.csv`,
 `data/processed/missingness_by_variable.csv`, and the merged dataset header.
 
@@ -44,7 +44,7 @@ station-hour using the documented priority order below.
 
 - `online_complete`: The station has `data_present == 1` and every configured measurement column is non-null.
 - `online_partial_missing`: The station has `data_present == 1`, but at least one configured measurement column is null. These rows represent online periods with possible partial sensor dropout.
-- `true_outage_candidate`: The station has `data_present == 0` between its first and last present timestamps. Phase 2 should treat these rows as candidate availability outages.
+- `true_outage_candidate`: The station has `data_present == 0` between its first and last present timestamps. The availability engine treats these rows as candidate outages.
 - `terminal_padded_absence`: The station has `data_present == 0` after its last present timestamp. These rows are padded end-of-record absences, not primary outage evidence.
 - `warmup`: The station has `data_present == 1` within the first 7 days after its first present timestamp. These rows are kept separate because early installation behavior may be atypical.
 - `before_first_present`: The row timestamp is before the station's first present timestamp. These are pre-activation padded rows when they appear.
@@ -83,12 +83,12 @@ Two stations are notable because terminal padding affects interpretation:
 
 Several otherwise useful stations also have meaningful partial-missing rows.
 `IBARAS3`, `IBIRAL3`, `IDERNA7`, `IJABAL13`, and `INALUT3` are worth reviewing
-when Phase 5 builds sensor-fault labels.
+when the label-review workflow builds sensor-fault labels.
 
 ## Missingness findings
 
 Overall missingness includes absent outage and padded rows, so the more
-important Phase 1 fault signal is `missing_pct_when_data_present`. The audit
+important audit signal is `missing_pct_when_data_present`. The audit
 found 24 measurement variables above 5 percent missingness conditional on
 `data_present == 1`. Each of these variables has conditional missingness of
 6.37 percent:
@@ -121,15 +121,15 @@ found 24 measurement variables above 5 percent missingness conditional on
 Pressure variables are below 1 percent conditional missingness, and
 precipitation variables are about 2.10 percent conditional missingness.
 
-## What Phase 1 enables
+## Downstream use
 
-- Phase 2 availability events will use `true_outage_candidate` rows only, avoiding terminal padding and warmup periods.
-- Phase 4 neighbor features will prefer `reliable_reference_candidate` stations as reference stations.
-- Phase 5 labels will use the `row_state` column as a starting point for the review queue.
+- Availability events use `true_outage_candidate` rows only, avoiding terminal padding and warmup periods.
+- Neighbor features prefer `reliable_reference_candidate` stations as reference stations.
+- Label review uses the `row_state` column as a starting point for the review queue.
 
 ## Regenerating artifacts
 
-The Phase 1 audit artifacts are tracked in this repository. To regenerate them
+The audit artifacts are tracked in this repository. To regenerate them
 after changing the merged data or registry:
 
 ```bash

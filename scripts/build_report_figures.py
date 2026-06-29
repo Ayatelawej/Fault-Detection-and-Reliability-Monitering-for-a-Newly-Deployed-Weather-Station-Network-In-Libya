@@ -141,7 +141,7 @@ def build_station_network_map() -> Path:
     ax.text(
         0.99,
         0.02,
-        "26 Weather Underground stations; marker color shows Phase 1 status class",
+        "26 Weather Underground stations; marker color shows audit status class",
         transform=ax.transAxes,
         ha="right",
         va="bottom",
@@ -204,7 +204,7 @@ def build_architecture_diagram() -> Path:
     ax.text(
         5.5,
         5.72,
-        "Completed Phase 1/2 reliability layer feeds Stage 3 statistical scoring and later review/ML stages",
+        "Completed reliability layer feeds statistical scoring and later review/ML work",
         ha="center",
         va="center",
         fontsize=9,
@@ -317,7 +317,7 @@ def build_outage_event_flow() -> Path:
     ax.text(
         5.0,
         0.95,
-        "Phase 2 turns candidate outage hours into duration-bearing events, then separates local station failures from coordinated network windows.",
+        "Candidate outage hours become duration-bearing events, then local station failures are separated from coordinated network windows.",
         ha="center",
         fontsize=9,
         color=COLORS["muted"],

@@ -1,8 +1,8 @@
-# Phase 2 - Outage Engine
+# Availability Engine
 
 ## Status: closed (May 2026)
 
-## What this stage produces
+## What this module produces
 
 ### Tier 1: events
 `data/processed/availability_events.parquet`
@@ -38,7 +38,7 @@ timestamp, days-since-last-outage-at-freeze.
 
 ## Investigation findings
 
-Detailed in `docs/midnight_outage_investigation.md`:
+Detailed checks are preserved in `docs/availability_investigation_checks/`:
 - Sub-minute drop synchronization confirmed for tight-sync midnight
   events (medians 23-59 seconds across 9 events)
 - Median per-station outage duration in midnight windows: 24 hours
@@ -52,6 +52,6 @@ Detailed in `docs/midnight_outage_investigation.md`:
 
 ## Tests
 
-21 passing (4 from Phase 1, 17 from Phase 2).
-`tests/test_phase2_availability.py` verifies event counts, schema,
+21 passing across the audit and availability test suites.
+`tests/test_availability.py` verifies event counts, schema,
 duration semantics, and outage_class assignments against the windows table.

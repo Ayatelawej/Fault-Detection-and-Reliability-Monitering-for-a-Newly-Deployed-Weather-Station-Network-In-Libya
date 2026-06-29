@@ -13,7 +13,7 @@ from src.config.paths import (
     NETWORK_OUTAGE_WINDOWS_PATH,
 )
 
-OUTPUT_DIR = Path("docs/phase2_investigation_checks")
+OUTPUT_DIR = Path("docs/availability_investigation_checks")
 OUTPUT_TXT = OUTPUT_DIR / "window_durations_hourly.txt"
 OUTPUT_CSV = OUTPUT_DIR / "window_durations_hourly.csv"
 

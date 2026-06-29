@@ -10,7 +10,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config.paths import HOURLY_ROW_STATES_PATH
 
-OUTPUT_DIR = Path("docs/phase2_investigation_checks")
+OUTPUT_DIR = Path("docs/availability_investigation_checks")
 OUTPUT_TXT = OUTPUT_DIR / "winter_silence.txt"
 
 INACTIVE_STATES = {

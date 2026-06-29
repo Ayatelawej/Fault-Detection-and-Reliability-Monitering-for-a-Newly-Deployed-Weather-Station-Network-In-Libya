@@ -433,7 +433,7 @@ def main() -> None:
     written_files = run_data_audit()
     summary = pd.read_csv(DATA_AUDIT_SUMMARY_PATH)
 
-    print("Phase 1 data audit complete.")
+    print("Dataset audit complete.")
     print(f"Rows processed: {summary['total_rows'].sum():,}")
     print("Files written:")
     for label, path in written_files.items():

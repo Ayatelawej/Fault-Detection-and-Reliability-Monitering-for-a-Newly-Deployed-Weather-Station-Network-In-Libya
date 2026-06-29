@@ -141,7 +141,7 @@ def _print_summary(events: pd.DataFrame) -> None:
         errors="coerce",
     ).fillna(0)
 
-    print("Phase 2 availability events complete.")
+    print("Availability events complete.")
     print(f"Total events: {len(events):,}")
     print(f"Total absent hours: {int(duration_hours.sum()):,}")
     print("Per-duration-bucket counts:")

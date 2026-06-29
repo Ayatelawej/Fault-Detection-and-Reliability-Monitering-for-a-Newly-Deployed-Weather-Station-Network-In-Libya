@@ -9,8 +9,8 @@ from docx.shared import Inches
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT_DIR = ROOT / "docs" / "report_drafts"
-SOURCE_DOCX = REPORT_DIR / "Ayat_Elawej_EC499_Report_Draft_Phase1_Phase2.docx"
-OUTPUT_DOCX = REPORT_DIR / "Ayat_Elawej_EC499_Report_Draft_Phase1_Phase2_with_figures.docx"
+SOURCE_DOCX = REPORT_DIR / "Ayat_Elawej_EC499_Report_Draft.docx"
+OUTPUT_DOCX = REPORT_DIR / "Ayat_Elawej_EC499_Report_Draft_with_figures.docx"
 FIGURES_DIR = ROOT / "outputs" / "figures"
 
 

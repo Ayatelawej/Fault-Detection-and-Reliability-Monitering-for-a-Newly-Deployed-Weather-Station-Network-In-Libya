@@ -88,7 +88,7 @@ def _event_start_in_window_mask(
 
 def test_availability_events_output_exists() -> None:
     assert AVAILABILITY_EVENTS_PATH.exists(), (
-        f"Missing Phase 2 availability output: {AVAILABILITY_EVENTS_PATH}"
+        f"Missing availability output: {AVAILABILITY_EVENTS_PATH}"
     )
 
 
@@ -176,7 +176,7 @@ def test_availability_event_hours_match_true_outage_rows(
 
 def test_network_outage_windows_output_exists() -> None:
     assert NETWORK_OUTAGE_WINDOWS_PATH.exists(), (
-        f"Missing Phase 2 network outage output: {NETWORK_OUTAGE_WINDOWS_PATH}"
+        f"Missing network outage output: {NETWORK_OUTAGE_WINDOWS_PATH}"
     )
 
 

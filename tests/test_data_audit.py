@@ -121,7 +121,7 @@ def test_audit_outputs_exist() -> None:
         MISSINGNESS_HEATMAP_PATH,
     ]
     for path in expected_paths:
-        assert path.exists(), f"Missing Phase 1 audit output: {path}"
+        assert path.exists(), f"Missing audit output: {path}"
 
     audit_summary = pd.read_csv(DATA_AUDIT_SUMMARY_PATH)
     assert len(audit_summary) == EXPECTED_STATION_COUNT

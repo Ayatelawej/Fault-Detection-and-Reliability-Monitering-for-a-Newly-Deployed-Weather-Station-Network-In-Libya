@@ -278,7 +278,7 @@ def assign_outage_class(
 
 
 def _print_summary(events: pd.DataFrame, windows: pd.DataFrame) -> None:
-    print("Phase 2 network outage windows complete.")
+    print("Network outage windows complete.")
     print(f"min_stations: {NETWORK_OUTAGE_MIN_STATIONS}")
     print(f"time_window_hours: {NETWORK_OUTAGE_TIME_WINDOW_HOURS}")
     print(f"Total windows detected: {len(windows):,}")

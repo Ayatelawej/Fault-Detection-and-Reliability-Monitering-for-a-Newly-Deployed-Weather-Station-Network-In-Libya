@@ -12,7 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.config.paths import NETWORK_OUTAGE_WINDOWS_PATH
 
 PULLS_DIR = Path("data/external/wu_minute_pulls")
-OUTPUT_DIR = Path("docs/phase2_investigation_checks")
+OUTPUT_DIR = Path("docs/availability_investigation_checks")
 OUTPUT_TXT = OUTPUT_DIR / "window_recovery_patterns.txt"
 OUTPUT_CSV = OUTPUT_DIR / "window_recovery_patterns.csv"
 

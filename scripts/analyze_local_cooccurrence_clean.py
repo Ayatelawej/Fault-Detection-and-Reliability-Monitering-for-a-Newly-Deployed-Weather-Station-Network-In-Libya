@@ -16,7 +16,7 @@ from src.config.paths import (
     STATION_REGISTRY_PATH,
 )
 
-OUTPUT_DIR = Path("docs/phase2_investigation_checks")
+OUTPUT_DIR = Path("docs/availability_investigation_checks")
 OUTPUT_TXT = OUTPUT_DIR / "local_cooccurrence_clean.txt"
 OUTPUT_CSV = OUTPUT_DIR / "local_cooccurrence_clean.csv"
 

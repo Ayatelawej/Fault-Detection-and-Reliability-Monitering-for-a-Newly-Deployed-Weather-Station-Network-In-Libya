@@ -544,7 +544,7 @@ def main() -> None:
     clustered.to_parquet(CLUSTER_OUTPUT_PATH, index=False)
 
     scored_channel_count = int(scores["channel"].nunique())
-    print("STAGE 3 SCORE DIAGNOSTIC")
+    print("STATISTICAL ANOMALY SCORE DIAGNOSTIC")
     print(f"Input path: {MERGED_DATASET_PATH}")
     print(f"Output path: {OUTPUT_PATH}")
     print(f"Event output path: {EVENT_OUTPUT_PATH}")

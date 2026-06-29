@@ -1,12 +1,12 @@
-# Phase 2 Investigation Checks
+# Availability Investigation Checks
 
-This folder preserves small exploratory checks used during Phase 2 root-cause
+This folder preserves small exploratory checks used during outage root-cause
 analysis. These are not canonical pipeline steps and are not pytest tests.
 
 Run the checks from the project root with:
 
 ```bash
-python docs/phase2_investigation_checks/run_checks.py
+python docs/availability_investigation_checks/run_checks.py
 ```
 
 The script writes:
