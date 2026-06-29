@@ -17,6 +17,7 @@ from src.rules.config import (
 from src.rules.detectors.isolation_forest import score_isolation_forest
 from src.rules.detectors.robust_zscore import score_robust_zscore
 from src.rules.detectors.rolling_variance import detect_stuck_values
+from src.rules.physical_limits import REASON_PHYSICAL_LIMIT, physical_limit_flags
 
 
 OUTPUT_COLUMNS = [
@@ -30,6 +31,7 @@ OUTPUT_COLUMNS = [
     "flag_zscore",
     "flag_stuck",
     "flag_iforest",
+    "flag_physical",
     "flag",
     "reason",
 ]
@@ -104,6 +106,8 @@ def _reason(row: pd.Series) -> str:
         reasons.append("stuck_variance_zero")
     if bool(row["flag_iforest"]):
         reasons.append("iforest_outlier")
+    if bool(row["flag_physical"]):
+        reasons.append(REASON_PHYSICAL_LIMIT)
 
     return "|".join(reasons)
 
@@ -142,6 +146,10 @@ def compute_anomaly_scores(
                     series,
                     ignore_zero=original_channel in STUCK_IGNORE_ZERO_CHANNELS,
                 )
+            physical = physical_limit_flags(
+                df.loc[station_frame.index, original_channel],
+                original_channel,
+            )
             iforest_score = score_isolation_forest(
                 series,
                 random_state=random_state,
@@ -158,6 +166,7 @@ def compute_anomaly_scores(
                         "rolling_variance": stuck["rolling_variance"].to_numpy(),
                         "iforest_score": iforest_score.to_numpy(),
                         "flag_stuck": stuck["flag"].to_numpy(dtype=bool),
+                        "flag_physical": physical.to_numpy(dtype=bool),
                         "_present": series.notna().to_numpy(),
                     },
                 )
@@ -187,6 +196,7 @@ def compute_anomaly_scores(
         result["flag_zscore"].astype(bool)
         | result["flag_stuck"].astype(bool)
         | result["flag_iforest"].astype(bool)
+        | result["flag_physical"].astype(bool)
     )
     result["reason"] = result.apply(_reason, axis=1)
     result = result.loc[result["_present"]].drop(columns="_present")

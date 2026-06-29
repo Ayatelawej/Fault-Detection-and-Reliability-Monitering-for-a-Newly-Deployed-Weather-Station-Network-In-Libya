@@ -58,6 +58,7 @@ def _per_channel_table(scores: pd.DataFrame) -> pd.DataFrame:
             flag_zscore=("flag_zscore", "mean"),
             flag_stuck=("flag_stuck", "mean"),
             flag_iforest=("flag_iforest", "mean"),
+            flag_physical=("flag_physical", "mean"),
         )
         .sort_values("flag_rate", ascending=False)
     )
@@ -71,7 +72,12 @@ def _print_detector_contribution(scores: pd.DataFrame) -> None:
         print("No flagged rows.")
         return
 
-    for reason in ["mad_high", "stuck_variance_zero", "iforest_outlier"]:
+    for reason in [
+        "mad_high",
+        "stuck_variance_zero",
+        "iforest_outlier",
+        "physical_limit_breach",
+    ]:
         fraction = flagged["reason"].str.contains(reason, regex=False).mean()
         print(f"{reason}: {_rate(float(fraction))}")
 
@@ -565,6 +571,7 @@ def main() -> None:
                 "flag_zscore": _rate,
                 "flag_stuck": _rate,
                 "flag_iforest": _rate,
+                "flag_physical": _rate,
             },
         )
     )

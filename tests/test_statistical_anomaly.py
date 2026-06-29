@@ -23,6 +23,7 @@ SCORE_OUTPUT_COLUMNS = [
     "flag_zscore",
     "flag_stuck",
     "flag_iforest",
+    "flag_physical",
     "flag",
     "reason",
 ]
@@ -72,6 +73,7 @@ CLUSTER_FEATURE_COLUMNS = [
     "sg_wind_vane",
     "sg_other",
     "det_iforest",
+    "det_physical",
     "det_stuck",
     "det_zscore",
     "n_sensor_groups",
@@ -258,6 +260,7 @@ def _event_score_row(
     flag_zscore: bool = False,
     flag_stuck: bool = False,
     flag_iforest: bool = False,
+    flag_physical: bool = False,
 ) -> dict[str, object]:
     reason_tokens: list[str] = []
 
@@ -267,6 +270,8 @@ def _event_score_row(
         reason_tokens.append("stuck_variance_zero")
     if flag_iforest:
         reason_tokens.append("iforest_outlier")
+    if flag_physical:
+        reason_tokens.append("physical_limit_breach")
 
     return {
         "station_id": station_id,
@@ -278,7 +283,8 @@ def _event_score_row(
         "flag_zscore": flag_zscore,
         "flag_stuck": flag_stuck,
         "flag_iforest": flag_iforest,
-        "flag": flag_zscore or flag_stuck or flag_iforest,
+        "flag_physical": flag_physical,
+        "flag": flag_zscore or flag_stuck or flag_iforest or flag_physical,
         "reason": "|".join(reason_tokens),
     }
 
@@ -1053,6 +1059,34 @@ class TestScoreOrchestratorIntegration:
             regex=False,
         ).all()
 
+    def test_compute_anomaly_scores_flags_physical_limit_breaches(self) -> None:
+        from src.rules.score import compute_anomaly_scores
+
+        hours = pd.date_range("2024-04-01", periods=1_600, freq="h", tz="UTC")
+        frame = pd.DataFrame(
+            {
+                "station_id": "STA_PHYSICAL",
+                "hour_utc": hours,
+                "solar_radiation_high_wm2": 600.0,
+            }
+        )
+        frame.loc[400, "solar_radiation_high_wm2"] = 1_450.0
+
+        result = compute_anomaly_scores(
+            frame,
+            channels=["solar_radiation_high_wm2"],
+            flag_percentile=100.0,
+            random_state=42,
+        )
+        breach = result.loc[
+            result["hour_utc"].eq(hours[400])
+            & result["channel"].eq("solar_radiation_high_wm2")
+        ].iloc[0]
+
+        assert bool(breach["flag_physical"])
+        assert bool(breach["flag"])
+        assert "physical_limit_breach" in str(breach["reason"])
+
     def test_compute_anomaly_scores_leaves_normal_temperature_mostly_unflagged(
         self,
     ) -> None:
@@ -1158,6 +1192,31 @@ class TestEventBuilderIntegration:
         assert event["dominant_detector"] == "stuck"
         assert int(event["detector_concordance"]) == 2
 
+    def test_build_events_treats_physical_limit_as_detector(self) -> None:
+        from src.rules.events import build_events
+
+        rows = [
+            _event_score_row(
+                "STA_PHYSICAL",
+                "solar_radiation_high_wm2",
+                0,
+                flag_physical=True,
+            ),
+            _event_score_row(
+                "STA_PHYSICAL",
+                "solar_radiation_high_wm2",
+                1,
+                flag_physical=True,
+                flag_iforest=True,
+            ),
+        ]
+
+        event = build_events(pd.DataFrame(rows)).iloc[0]
+
+        assert event["dominant_detector"] == "physical"
+        assert int(event["detector_concordance"]) == 2
+        assert "physical_limit_breach" in event["reasons"]
+
     def test_build_events_returns_exact_columns(self) -> None:
         result = _events_output()
 
@@ -1260,6 +1319,7 @@ class TestEpisodeClusteringIntegration:
         row = features.iloc[0]
 
         assert int(row["det_stuck"]) == 1
+        assert int(row["det_physical"]) == 0
         assert int(row["det_iforest"]) == 0
         assert int(row["det_zscore"]) == 0
         assert float(row["log_duration"]) == pytest.approx(np.log1p(72))
@@ -1564,6 +1624,41 @@ class TestReviewQueueIntegration:
         assert bool(stuck_detector["needs_5min_confirmation"])
         assert bool(stuck_reason["needs_5min_confirmation"])
         assert not bool(iforest_only["needs_5min_confirmation"])
+
+    def test_build_review_queue_surfaces_unselected_physical_limit_rows(self) -> None:
+        from src.rules.review_queue import build_review_queue
+
+        rows = []
+        probabilities = [0.99, 0.98, 0.97, 0.96, 0.95, 0.40, 0.30, 0.20]
+        for index, probability in enumerate(probabilities):
+            rows.append(
+                _review_queue_row(
+                    f"STA_PHYSICAL_{index}",
+                    index,
+                    9,
+                    probability,
+                    10.0 + index,
+                    dominant_detector="physical" if index == 5 else "iforest",
+                    reasons=(
+                        "physical_limit_breach"
+                        if index == 5
+                        else "iforest_outlier"
+                    ),
+                    affected_sensor_groups="light_uv",
+                )
+            )
+
+        result = build_review_queue(
+            pd.DataFrame(rows),
+            reps_per_cluster=5,
+            boundary_per_cluster=2,
+            noise_sample=0,
+        )
+        physical = result.loc[result["station_id"].eq("STA_PHYSICAL_5")]
+
+        assert len(physical) == 1
+        assert physical.iloc[0]["role"] == "physical_limit"
+        assert int(physical.iloc[0]["cluster_size"]) == 8
 
     def test_build_review_queue_returns_exact_columns_and_empty_labels(self) -> None:
         from src.rules.review_queue import build_review_queue

@@ -6,6 +6,28 @@ COVERAGE_FLOOR_HOURS = 1500
 HDBSCAN_MIN_CLUSTER_SIZE = 30
 HDBSCAN_MIN_SAMPLES = 10
 REVIEW_SUSTAINED_NOISE_HOURS = 24
+PHYSICAL_LIMIT_RULES = {
+    "temp_avg_c": {"min": -60.0, "max": 60.0, "kind": "temperature"},
+    "temp_high_c": {"min": -60.0, "max": 60.0, "kind": "temperature"},
+    "temp_low_c": {"min": -60.0, "max": 60.0, "kind": "temperature"},
+    "humidity_avg_pct": {"min": 0.0, "max": 100.0, "kind": "humidity"},
+    "humidity_high_pct": {"min": 0.0, "max": 100.0, "kind": "humidity"},
+    "humidity_low_pct": {"min": 0.0, "max": 100.0, "kind": "humidity"},
+    "windspeed_avg_kmh": {"min": 0.0, "max": 250.0, "kind": "wind"},
+    "windspeed_high_kmh": {"min": 0.0, "max": 250.0, "kind": "wind"},
+    "windspeed_low_kmh": {"min": 0.0, "max": 250.0, "kind": "wind"},
+    "windgust_avg_kmh": {"min": 0.0, "max": 300.0, "kind": "wind"},
+    "windgust_high_kmh": {"min": 0.0, "max": 300.0, "kind": "wind"},
+    "windgust_low_kmh": {"min": 0.0, "max": 300.0, "kind": "wind"},
+    "winddir_avg_deg": {"min": 0.0, "max": 360.0, "kind": "wind_direction"},
+    "pressure_max_hpa": {"min": 870.0, "max": 1085.0, "kind": "pressure"},
+    "pressure_min_hpa": {"min": 870.0, "max": 1085.0, "kind": "pressure"},
+    "pressure_trend_hpa": {"max_abs": 20.0, "kind": "pressure_trend"},
+    "precip_rate_mmh": {"min": 0.0, "max": 1000.0, "kind": "rain_rate"},
+    "precip_total_mm": {"min": 0.0, "max": 1000.0, "kind": "rain_total"},
+    "solar_radiation_high_wm2": {"min": 0.0, "max": 1400.0, "kind": "solar"},
+    "uv_high": {"min": 0.0, "max": 25.0, "kind": "uv"},
+}
 
 CHANNEL_BASELINE_WINDOWS = {
     "pressure_max_hpa": 30 * 24,

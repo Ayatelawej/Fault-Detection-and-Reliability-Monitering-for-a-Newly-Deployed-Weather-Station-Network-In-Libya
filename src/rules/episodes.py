@@ -22,11 +22,12 @@ OUTPUT_COLUMNS = [
     "min_rolling_variance",
     "reasons",
 ]
-DETECTOR_PRIORITY = ["stuck", "iforest", "zscore"]
+DETECTOR_PRIORITY = ["physical", "stuck", "iforest", "zscore"]
 REASON_TO_DETECTOR = {
     "mad_high": "zscore",
     "stuck_variance_zero": "stuck",
     "iforest_outlier": "iforest",
+    "physical_limit_breach": "physical",
 }
 
 

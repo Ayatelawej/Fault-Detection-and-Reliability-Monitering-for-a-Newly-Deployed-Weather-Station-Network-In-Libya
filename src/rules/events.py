@@ -19,10 +19,12 @@ OUTPUT_COLUMNS = [
 
 
 DETECTOR_COLUMNS = {
+    "physical": "flag_physical",
     "stuck": "flag_stuck",
     "iforest": "flag_iforest",
     "zscore": "flag_zscore",
 }
+DETECTOR_PRIORITY = ["physical", "stuck", "iforest", "zscore"]
 
 
 def _dominant_detector(event_rows: pd.DataFrame) -> str:
@@ -30,7 +32,7 @@ def _dominant_detector(event_rows: pd.DataFrame) -> str:
         detector: int(event_rows[column].fillna(False).astype(bool).sum())
         for detector, column in DETECTOR_COLUMNS.items()
     }
-    return max(["stuck", "iforest", "zscore"], key=lambda detector: counts[detector])
+    return max(DETECTOR_PRIORITY, key=lambda detector: counts[detector])
 
 
 def _detector_concordance(event_rows: pd.DataFrame) -> int:

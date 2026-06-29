@@ -14,7 +14,7 @@ from src.rules.config import (
 
 ID_COLUMNS = ["station_id", "start_hour", "end_hour"]
 KNOWN_SENSOR_GROUPS = sorted(set(SENSOR_GROUP_PREFIXES.values()))
-DETECTORS = ["iforest", "stuck", "zscore"]
+DETECTORS = ["iforest", "physical", "stuck", "zscore"]
 FEATURE_COLUMNS = [
     "sg_anemometer",
     "sg_barometer",
@@ -24,6 +24,7 @@ FEATURE_COLUMNS = [
     "sg_wind_vane",
     "sg_other",
     "det_iforest",
+    "det_physical",
     "det_stuck",
     "det_zscore",
     "n_sensor_groups",

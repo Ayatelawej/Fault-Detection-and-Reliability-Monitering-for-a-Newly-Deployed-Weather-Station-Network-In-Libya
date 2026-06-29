@@ -22,10 +22,10 @@ Completed:
 - Statistical anomaly detection with channel events, fault episodes, clustering,
   and review queue generation, `v0.3` code complete with final figures pending
 
-The anomaly workflow reduces 18,366 flagged station-hours into 2,699 fault
-episodes, 34 cluster families, and a 274-row review queue. The queue includes
-representatives, boundary cases, noise checks, and sustained unclustered faults
-that require individual review.
+The anomaly workflow reduces 18,467 flagged station-hours into 2,719 fault
+episodes, 31 cluster families, and a 349-row review queue. The queue includes
+representatives, boundary cases, noise checks, sustained unclustered faults, and
+hard physical-limit breaches that require direct review.
 
 Next work:
 

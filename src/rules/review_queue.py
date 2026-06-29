@@ -47,6 +47,10 @@ def _needs_5min_confirmation(row: pd.Series) -> bool:
     )
 
 
+def _has_physical_limit(row: pd.Series) -> bool:
+    return "physical_limit_breach" in _reason_tokens(row["reasons"])
+
+
 def _with_review_fields(
     frame: pd.DataFrame,
     role: str,
@@ -95,6 +99,14 @@ def _cluster_review_rows(
         )
 
     return rows
+
+
+def _selected_episode_keys(rows: list[pd.DataFrame]) -> set[tuple[object, object]]:
+    if not rows:
+        return set()
+
+    selected = pd.concat(rows, ignore_index=True)
+    return set(zip(selected["station_id"], selected["start_hour"]))
 
 
 def build_review_queue(
@@ -148,6 +160,46 @@ def build_review_queue(
                 len(noise),
             )
         )
+
+    physical_limit = clusters_df.loc[
+        clusters_df.apply(_has_physical_limit, axis=1)
+    ].copy()
+    if not physical_limit.empty:
+        selected_keys = _selected_episode_keys(rows)
+        physical_limit = physical_limit.loc[
+            [
+                key not in selected_keys
+                for key in zip(
+                    physical_limit["station_id"],
+                    physical_limit["start_hour"],
+                )
+            ]
+        ].sort_values(
+            ["duration_hours", "start_hour"],
+            ascending=[False, True],
+        )
+        if not physical_limit.empty:
+            cluster_sizes = clusters_df.groupby("cluster_label").size()
+            physical_limit = physical_limit.copy()
+            physical_limit["_cluster_size"] = physical_limit["cluster_label"].map(
+                cluster_sizes,
+            )
+            rows.append(
+                pd.concat(
+                    [
+                        _with_review_fields(
+                            group.drop(columns="_cluster_size"),
+                            "physical_limit",
+                            int(group["_cluster_size"].iloc[0]),
+                        )
+                        for _, group in physical_limit.groupby(
+                            "cluster_label",
+                            sort=False,
+                        )
+                    ],
+                    ignore_index=True,
+                )
+            )
 
     if rows:
         result = pd.concat(rows, ignore_index=True)
@@ -229,7 +281,13 @@ def main() -> None:
     print(f"Output path: {REVIEW_QUEUE_PATH}")
     print(f"Total review rows: {len(queue):,}")
     print("Counts by role:")
-    for role in ["representative", "boundary", "noise_sustained", "noise_check"]:
+    for role in [
+        "representative",
+        "boundary",
+        "noise_sustained",
+        "noise_check",
+        "physical_limit",
+    ]:
         print(f"{role}: {int(role_counts.get(role, 0))}")
     print(f"Distinct non-noise clusters represented: {represented_clusters}")
     print(f"needs_5min_confirmation rows: {len(needs_5min):,}")
