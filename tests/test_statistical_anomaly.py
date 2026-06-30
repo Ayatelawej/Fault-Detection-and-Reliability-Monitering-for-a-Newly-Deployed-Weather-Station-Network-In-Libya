@@ -24,6 +24,7 @@ SCORE_OUTPUT_COLUMNS = [
     "flag_stuck",
     "flag_iforest",
     "flag_physical",
+    "flag_physical_suspect",
     "flag",
     "reason",
 ]
@@ -261,6 +262,7 @@ def _event_score_row(
     flag_stuck: bool = False,
     flag_iforest: bool = False,
     flag_physical: bool = False,
+    flag_physical_suspect: bool = False,
 ) -> dict[str, object]:
     reason_tokens: list[str] = []
 
@@ -272,6 +274,8 @@ def _event_score_row(
         reason_tokens.append("iforest_outlier")
     if flag_physical:
         reason_tokens.append("physical_limit_breach")
+    if flag_physical_suspect:
+        reason_tokens.append("physical_suspect_breach")
 
     return {
         "station_id": station_id,
@@ -284,6 +288,7 @@ def _event_score_row(
         "flag_stuck": flag_stuck,
         "flag_iforest": flag_iforest,
         "flag_physical": flag_physical,
+        "flag_physical_suspect": flag_physical_suspect,
         "flag": flag_zscore or flag_stuck or flag_iforest or flag_physical,
         "reason": "|".join(reason_tokens),
     }
@@ -1087,6 +1092,38 @@ class TestScoreOrchestratorIntegration:
         assert bool(breach["flag"])
         assert "physical_limit_breach" in str(breach["reason"])
 
+    def test_compute_anomaly_scores_marks_suspect_values_only_when_flagged(
+        self,
+    ) -> None:
+        from src.rules.score import compute_anomaly_scores
+
+        hours = pd.date_range("2024-04-01", periods=1_600, freq="h", tz="UTC")
+        values = 600.0 + np.sin(np.arange(1_600) / 24.0)
+        values[400] = 1_250.0
+        values[401] = 1_200.0
+        frame = pd.DataFrame(
+            {
+                "station_id": "STA_SUSPECT",
+                "hour_utc": hours,
+                "solar_radiation_high_wm2": values,
+            }
+        )
+
+        result = compute_anomaly_scores(
+            frame,
+            channels=["solar_radiation_high_wm2"],
+            flag_percentile=100.0,
+            random_state=42,
+        )
+        suspect = result.loc[result["hour_utc"].eq(hours[400])].iloc[0]
+        ordinary_suspect = result.loc[result["hour_utc"].eq(hours[401])].iloc[0]
+
+        assert bool(suspect["flag"])
+        assert bool(suspect["flag_physical_suspect"])
+        assert "physical_suspect_breach" in str(suspect["reason"])
+        assert not bool(ordinary_suspect["flag"])
+        assert not bool(ordinary_suspect["flag_physical_suspect"])
+
     def test_compute_anomaly_scores_leaves_normal_temperature_mostly_unflagged(
         self,
     ) -> None:
@@ -1216,6 +1253,27 @@ class TestEventBuilderIntegration:
         assert event["dominant_detector"] == "physical"
         assert int(event["detector_concordance"]) == 2
         assert "physical_limit_breach" in event["reasons"]
+
+    def test_build_events_treats_suspect_physical_reason_as_physical_detector(
+        self,
+    ) -> None:
+        from src.rules.events import build_events
+
+        rows = [
+            _event_score_row(
+                "STA_SUSPECT",
+                "solar_radiation_high_wm2",
+                0,
+                flag_iforest=True,
+                flag_physical_suspect=True,
+            )
+        ]
+
+        event = build_events(pd.DataFrame(rows)).iloc[0]
+
+        assert event["dominant_detector"] == "physical"
+        assert int(event["detector_concordance"]) == 2
+        assert "physical_suspect_breach" in event["reasons"]
 
     def test_build_events_returns_exact_columns(self) -> None:
         result = _events_output()
@@ -1640,7 +1698,7 @@ class TestReviewQueueIntegration:
                     10.0 + index,
                     dominant_detector="physical" if index == 5 else "iforest",
                     reasons=(
-                        "physical_limit_breach"
+                        "physical_suspect_breach"
                         if index == 5
                         else "iforest_outlier"
                     ),

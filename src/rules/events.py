@@ -19,12 +19,20 @@ OUTPUT_COLUMNS = [
 
 
 DETECTOR_COLUMNS = {
-    "physical": "flag_physical",
     "stuck": "flag_stuck",
     "iforest": "flag_iforest",
     "zscore": "flag_zscore",
 }
 DETECTOR_PRIORITY = ["physical", "stuck", "iforest", "zscore"]
+PHYSICAL_COLUMNS = ["flag_physical", "flag_physical_suspect"]
+
+
+def _physical_flags(event_rows: pd.DataFrame) -> pd.Series:
+    existing = [column for column in PHYSICAL_COLUMNS if column in event_rows.columns]
+    if not existing:
+        return pd.Series(False, index=event_rows.index)
+
+    return event_rows.loc[:, existing].fillna(False).astype(bool).any(axis=1)
 
 
 def _dominant_detector(event_rows: pd.DataFrame) -> str:
@@ -32,16 +40,16 @@ def _dominant_detector(event_rows: pd.DataFrame) -> str:
         detector: int(event_rows[column].fillna(False).astype(bool).sum())
         for detector, column in DETECTOR_COLUMNS.items()
     }
+    counts["physical"] = int(_physical_flags(event_rows).sum())
     return max(DETECTOR_PRIORITY, key=lambda detector: counts[detector])
 
 
 def _detector_concordance(event_rows: pd.DataFrame) -> int:
-    return int(
-        sum(
-            bool(event_rows[column].fillna(False).astype(bool).any())
-            for column in DETECTOR_COLUMNS.values()
-        )
+    count = sum(
+        bool(event_rows[column].fillna(False).astype(bool).any())
+        for column in DETECTOR_COLUMNS.values()
     )
+    return int(count + bool(_physical_flags(event_rows).any()))
 
 
 def _reasons(event_rows: pd.DataFrame) -> str:

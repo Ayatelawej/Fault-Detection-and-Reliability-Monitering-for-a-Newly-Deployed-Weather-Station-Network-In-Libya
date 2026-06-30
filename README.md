@@ -23,9 +23,10 @@ Completed:
   and review queue generation, `v0.3` code complete with final figures pending
 
 The anomaly workflow reduces 18,467 flagged station-hours into 2,719 fault
-episodes, 31 cluster families, and a 349-row review queue. The queue includes
-representatives, boundary cases, noise checks, sustained unclustered faults, and
-hard physical-limit breaches that require direct review.
+episodes, 32 cluster families, and a 412-row review queue. The queue includes
+representatives, boundary cases, noise checks, sustained unclustered faults,
+hard physical-limit breaches, and suspect-value breaches that require direct
+review.
 
 Next work:
 

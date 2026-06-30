@@ -28,6 +28,19 @@ PHYSICAL_LIMIT_RULES = {
     "solar_radiation_high_wm2": {"min": 0.0, "max": 1400.0, "kind": "solar"},
     "uv_high": {"min": 0.0, "max": 25.0, "kind": "uv"},
 }
+PHYSICAL_SUSPECT_RULES = {
+    "solar_radiation_high_wm2": {"max": 1100.0, "kind": "solar"},
+    "uv_high": {"max": 16.0, "kind": "uv"},
+    "windspeed_avg_kmh": {"max": 150.0, "kind": "wind"},
+    "windspeed_high_kmh": {"max": 150.0, "kind": "wind"},
+    "windspeed_low_kmh": {"max": 150.0, "kind": "wind"},
+    "windgust_avg_kmh": {"max": 180.0, "kind": "wind"},
+    "windgust_high_kmh": {"max": 180.0, "kind": "wind"},
+    "windgust_low_kmh": {"max": 180.0, "kind": "wind"},
+    "precip_rate_mmh": {"max": 300.0, "kind": "rain_rate"},
+    "precip_total_mm": {"max": 300.0, "kind": "rain_total"},
+    "pressure_trend_hpa": {"max_abs": 20.0, "kind": "pressure_trend"},
+}
 
 CHANNEL_BASELINE_WINDOWS = {
     "pressure_max_hpa": 30 * 24,

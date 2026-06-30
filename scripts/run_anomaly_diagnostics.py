@@ -59,6 +59,7 @@ def _per_channel_table(scores: pd.DataFrame) -> pd.DataFrame:
             flag_stuck=("flag_stuck", "mean"),
             flag_iforest=("flag_iforest", "mean"),
             flag_physical=("flag_physical", "mean"),
+            flag_physical_suspect=("flag_physical_suspect", "mean"),
         )
         .sort_values("flag_rate", ascending=False)
     )
@@ -77,6 +78,7 @@ def _print_detector_contribution(scores: pd.DataFrame) -> None:
         "stuck_variance_zero",
         "iforest_outlier",
         "physical_limit_breach",
+        "physical_suspect_breach",
     ]:
         fraction = flagged["reason"].str.contains(reason, regex=False).mean()
         print(f"{reason}: {_rate(float(fraction))}")
@@ -572,6 +574,7 @@ def main() -> None:
                 "flag_stuck": _rate,
                 "flag_iforest": _rate,
                 "flag_physical": _rate,
+                "flag_physical_suspect": _rate,
             },
         )
     )

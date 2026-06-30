@@ -48,7 +48,8 @@ def _needs_5min_confirmation(row: pd.Series) -> bool:
 
 
 def _has_physical_limit(row: pd.Series) -> bool:
-    return "physical_limit_breach" in _reason_tokens(row["reasons"])
+    tokens = _reason_tokens(row["reasons"])
+    return bool({"physical_limit_breach", "physical_suspect_breach"} & tokens)
 
 
 def _with_review_fields(

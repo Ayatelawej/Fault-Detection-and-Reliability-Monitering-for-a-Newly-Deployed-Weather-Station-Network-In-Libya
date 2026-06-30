@@ -28,6 +28,7 @@ REASON_TO_DETECTOR = {
     "stuck_variance_zero": "stuck",
     "iforest_outlier": "iforest",
     "physical_limit_breach": "physical",
+    "physical_suspect_breach": "physical",
 }
 
 

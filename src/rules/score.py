@@ -17,7 +17,12 @@ from src.rules.config import (
 from src.rules.detectors.isolation_forest import score_isolation_forest
 from src.rules.detectors.robust_zscore import score_robust_zscore
 from src.rules.detectors.rolling_variance import detect_stuck_values
-from src.rules.physical_limits import REASON_PHYSICAL_LIMIT, physical_limit_flags
+from src.rules.physical_limits import (
+    REASON_PHYSICAL_LIMIT,
+    REASON_PHYSICAL_SUSPECT,
+    physical_limit_flags,
+    physical_suspect_flags,
+)
 
 
 OUTPUT_COLUMNS = [
@@ -32,6 +37,7 @@ OUTPUT_COLUMNS = [
     "flag_stuck",
     "flag_iforest",
     "flag_physical",
+    "flag_physical_suspect",
     "flag",
     "reason",
 ]
@@ -108,6 +114,8 @@ def _reason(row: pd.Series) -> str:
         reasons.append("iforest_outlier")
     if bool(row["flag_physical"]):
         reasons.append(REASON_PHYSICAL_LIMIT)
+    if bool(row["flag_physical_suspect"]):
+        reasons.append(REASON_PHYSICAL_SUSPECT)
 
     return "|".join(reasons)
 
@@ -150,6 +158,10 @@ def compute_anomaly_scores(
                 df.loc[station_frame.index, original_channel],
                 original_channel,
             )
+            suspect = physical_suspect_flags(
+                df.loc[station_frame.index, original_channel],
+                original_channel,
+            )
             iforest_score = score_isolation_forest(
                 series,
                 random_state=random_state,
@@ -167,6 +179,7 @@ def compute_anomaly_scores(
                         "iforest_score": iforest_score.to_numpy(),
                         "flag_stuck": stuck["flag"].to_numpy(dtype=bool),
                         "flag_physical": physical.to_numpy(dtype=bool),
+                        "flag_physical_suspect": suspect.to_numpy(dtype=bool),
                         "_present": series.notna().to_numpy(),
                     },
                 )
@@ -197,6 +210,10 @@ def compute_anomaly_scores(
         | result["flag_stuck"].astype(bool)
         | result["flag_iforest"].astype(bool)
         | result["flag_physical"].astype(bool)
+    )
+    result["flag_physical_suspect"] = (
+        result["flag_physical_suspect"].astype(bool)
+        & result["flag"].astype(bool)
     )
     result["reason"] = result.apply(_reason, axis=1)
     result = result.loc[result["_present"]].drop(columns="_present")
