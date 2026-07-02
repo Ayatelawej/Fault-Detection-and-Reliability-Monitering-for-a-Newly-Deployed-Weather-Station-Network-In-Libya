@@ -16,6 +16,9 @@ FIVE_MIN_DIR = Path(
 MIN_5MIN_OBS = 24
 CONSTANCY_THRESHOLD = 0.99
 VALUE_PRECISION = 2
+LOWVAR_MODAL_FRACTION_FLOOR = 0.80
+RANGING_SPREAD_THRESHOLD = 5.0
+RANGING_DISTINCT_VALUE_THRESHOLD = 10
 STUCK_CHANNEL_MAP = {
     "solar_radiation_high_wm2": "solar_radiation_high_wm2",
     "uv_high": "uv_high",
@@ -293,6 +296,35 @@ def confirm_stuck_episodes(
         for _, row in episodes_df.iterrows()
     ]
     return pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
+
+
+def categorize_stuck_5min(
+    row: pd.Series | dict[str, Any],
+    flatline_threshold: float = CONSTANCY_THRESHOLD,
+    lowvar_floor: float = LOWVAR_MODAL_FRACTION_FLOOR,
+    spread_threshold: float = RANGING_SPREAD_THRESHOLD,
+    distinct_threshold: int = RANGING_DISTINCT_VALUE_THRESHOLD,
+) -> str:
+    data = _row_dict(row)
+    modal_fraction = float(data.get("modal_fraction", 0.0) or 0.0)
+    n_distinct = int(data.get("n_distinct_values", 0) or 0)
+    min_reading = data.get("min_reading")
+    max_reading = data.get("max_reading")
+    spread = 0.0
+
+    if pd.notna(min_reading) and pd.notna(max_reading):
+        spread = float(max_reading) - float(min_reading)
+
+    if modal_fraction >= flatline_threshold:
+        return "confirmed_flatline"
+
+    if modal_fraction >= lowvar_floor:
+        return "borderline_lowvar"
+
+    if spread > spread_threshold or n_distinct > distinct_threshold:
+        return "ranging_not_stuck"
+
+    return "ambiguous_lowmodal"
 
 
 def _reason_tokens(value: object) -> set[str]:

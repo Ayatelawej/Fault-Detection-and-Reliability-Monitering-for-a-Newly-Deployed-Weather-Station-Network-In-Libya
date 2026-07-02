@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.rules.stuck_confirmation import (
+    categorize_stuck_5min,
     confirm_episode,
     dominant_stuck_channel,
     load_five_min_window,
@@ -188,3 +189,55 @@ def test_dominant_stuck_channel_uses_row_channel_when_reason_is_present():
     result = dominant_stuck_channel(row)
 
     assert result == "windspeed_avg_kmh"
+
+
+def test_stuck_5min_category_confirmed_flatline():
+    result = categorize_stuck_5min(
+        {
+            "modal_fraction": 0.99,
+            "n_distinct_values": 1,
+            "min_reading": 0.0,
+            "max_reading": 0.0,
+        }
+    )
+
+    assert result == "confirmed_flatline"
+
+
+def test_stuck_5min_category_borderline_lowvar():
+    result = categorize_stuck_5min(
+        {
+            "modal_fraction": 0.90,
+            "n_distinct_values": 4,
+            "min_reading": 0.0,
+            "max_reading": 1.0,
+        }
+    )
+
+    assert result == "borderline_lowvar"
+
+
+def test_stuck_5min_category_ranging_not_stuck():
+    result = categorize_stuck_5min(
+        {
+            "modal_fraction": 0.20,
+            "n_distinct_values": 26,
+            "min_reading": 0.0,
+            "max_reading": 25.0,
+        }
+    )
+
+    assert result == "ranging_not_stuck"
+
+
+def test_stuck_5min_category_ambiguous_lowmodal():
+    result = categorize_stuck_5min(
+        {
+            "modal_fraction": 0.50,
+            "n_distinct_values": 2,
+            "min_reading": 0.00,
+            "max_reading": 0.01,
+        }
+    )
+
+    assert result == "ambiguous_lowmodal"
