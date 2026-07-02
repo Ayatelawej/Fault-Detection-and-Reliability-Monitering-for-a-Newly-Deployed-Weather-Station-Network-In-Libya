@@ -4,6 +4,7 @@ import pandas as pd
 
 from src.rules.stuck_confirmation import (
     confirm_episode,
+    dominant_stuck_channel,
     load_five_min_window,
     select_dominant_stuck_channels,
 )
@@ -170,3 +171,20 @@ def test_select_dominant_stuck_channel_uses_stuck_reason_events():
     result = select_dominant_stuck_channels(episodes, events)
 
     assert result.iloc[0]["channel"] == "winddir_sin"
+    assert result.iloc[0]["channel_resolution"] == "stuck_event"
+
+
+def test_dominant_stuck_channel_uses_row_channel_when_reason_is_present():
+    row = {
+        "station_id": "STA",
+        "channel": "windspeed_avg_kmh",
+        "start_hour": BASE_TIME,
+        "end_hour": BASE_TIME + pd.Timedelta(hours=1),
+        "duration_hours": 2,
+        "dominant_detector": "stuck",
+        "reasons": "stuck_variance_zero",
+    }
+
+    result = dominant_stuck_channel(row)
+
+    assert result == "windspeed_avg_kmh"
