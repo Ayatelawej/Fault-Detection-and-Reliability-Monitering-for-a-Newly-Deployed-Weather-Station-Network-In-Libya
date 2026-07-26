@@ -1,0 +1,871 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, replace
+import json
+from pathlib import Path
+from typing import Callable
+import warnings
+
+import numpy as np
+import pandas as pd
+import torch
+from torch import nn
+
+from src.model.hourly_baseline import binary_metrics
+from src.model.hourly_calibration import CALIBRATION_THRESHOLDS, select_operating_point, target_check
+from src.model.hourly_rgfn import ENCODER_CONV, ENCODER_GRU, MASK_MODE_PER_HOUR, build_hourly_rgfn, set_hourly_rgfn_seed
+
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+RGFN_WEIGHTS = (1.0, 2.0, 4.0, 6.0, 8.0)
+RGFN_THRESHOLDS = CALIBRATION_THRESHOLDS
+RGFN_SEEDS = (0, 1, 2, 3, 4)
+FEATURE_KEYS = ("X_cont", "mask", "time_since_last", "static", "rule_evidence")
+METRIC_NAMES = ("precision", "recall", "f1", "accuracy", "tp", "fp", "fn", "tn")
+
+
+@dataclass(frozen=True)
+class HourlyRgfnTrainingConfig:
+    seed: int = 0
+    fault_class_weight: float = 1.0
+    learning_rate: float = 1e-3
+    weight_decay: float = 1e-4
+    batch_size: int = 64
+    max_epochs: int = 100
+    patience: int = 10
+    min_delta: float = 1e-4
+    mask_mode: str = MASK_MODE_PER_HOUR
+
+
+def _center_scale(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        median = np.nanpercentile(values, 50, axis=0).astype(np.float32)
+        q25 = np.nanpercentile(values, 25, axis=0).astype(np.float32)
+        q75 = np.nanpercentile(values, 75, axis=0).astype(np.float32)
+    scale = (q75 - q25).astype(np.float32)
+    median[~np.isfinite(median)] = 0.0
+    scale[~np.isfinite(scale)] = 1.0
+    scale[scale == 0.0] = 1.0
+    return median, scale
+
+
+def _scale(values: np.ndarray, median: np.ndarray, scale: np.ndarray) -> np.ndarray:
+    scaled = (np.asarray(values, dtype=np.float32) - median) / scale
+    scaled = np.clip(scaled, -5.0, 5.0)
+    return np.nan_to_num(scaled, nan=0.0, posinf=5.0, neginf=-5.0).astype(np.float32)
+
+
+@dataclass
+class HourlyRgfnScaler:
+    continuous_median: np.ndarray
+    continuous_iqr: np.ndarray
+    static_median: np.ndarray
+    static_iqr: np.ndarray
+    rule_median: np.ndarray
+    rule_iqr: np.ndarray
+
+    @classmethod
+    def fit(cls, examples: dict[str, np.ndarray], train_indices: np.ndarray) -> "HourlyRgfnScaler":
+        selected = np.asarray(train_indices, dtype=np.int64)
+        continuous = np.asarray(examples["X_cont"], dtype=np.float32)[selected]
+        cont_median, cont_iqr = _center_scale(continuous.reshape(-1, continuous.shape[-1]))
+        static_median, static_iqr = _center_scale(np.asarray(examples["static"], dtype=np.float32)[selected])
+        rule_median, rule_iqr = _center_scale(np.asarray(examples["rule_evidence"], dtype=np.float32)[selected])
+        return cls(
+            continuous_median=cont_median,
+            continuous_iqr=cont_iqr,
+            static_median=static_median,
+            static_iqr=static_iqr,
+            rule_median=rule_median,
+            rule_iqr=rule_iqr,
+        )
+
+    def transform(self, examples: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        return {
+            "X_cont": _scale(
+                np.asarray(examples["X_cont"], dtype=np.float32),
+                self.continuous_median.reshape(1, 1, -1),
+                self.continuous_iqr.reshape(1, 1, -1),
+            ),
+            "mask": np.nan_to_num(
+                np.asarray(examples["mask"], dtype=np.float32),
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            ).astype(np.float32),
+            "time_since_last": np.nan_to_num(
+                np.asarray(examples["time_since_last"], dtype=np.float32),
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            ).astype(np.float32),
+            "static": _scale(
+                np.asarray(examples["static"], dtype=np.float32),
+                self.static_median.reshape(1, -1),
+                self.static_iqr.reshape(1, -1),
+            ),
+            "rule_evidence": _scale(
+                np.asarray(examples["rule_evidence"], dtype=np.float32),
+                self.rule_median.reshape(1, -1),
+                self.rule_iqr.reshape(1, -1),
+            ),
+        }
+
+    def payload(self) -> dict[str, np.ndarray]:
+        return {
+            "continuous_median": self.continuous_median,
+            "continuous_iqr": self.continuous_iqr,
+            "static_median": self.static_median,
+            "static_iqr": self.static_iqr,
+            "rule_median": self.rule_median,
+            "rule_iqr": self.rule_iqr,
+        }
+
+
+def _sample_keys(station_ids: np.ndarray, hours: np.ndarray) -> np.ndarray:
+    stations = np.asarray(station_ids, dtype=object).astype(str)
+    parsed = pd.to_datetime(pd.Series(hours), utc=True, format="mixed")
+    values = parsed.astype("int64").to_numpy(dtype=np.int64)
+    return np.asarray([f"{station}\x1f{int(hour)}" for station, hour in zip(stations, values)], dtype=object)
+
+
+def load_manifest_splits(examples: dict[str, np.ndarray], path: Path) -> dict[str, dict[str, np.ndarray]]:
+    manifest = pd.read_csv(path, keep_default_na=False)
+    required = {"split_scheme", "split", "station_id", "hour", "fault_hour"}
+    missing = sorted(required.difference(manifest.columns))
+    if missing:
+        raise KeyError(f"split manifest fields missing: {missing}")
+    tensor_keys = _sample_keys(examples["station_id"], examples["hour"])
+    if len(np.unique(tensor_keys)) != len(tensor_keys):
+        raise ValueError("hourly tensor station-hour keys are not unique")
+    tensor_index = {str(key): index for index, key in enumerate(tensor_keys)}
+    labels = np.asarray(examples["y_binary"], dtype=int)
+    result: dict[str, dict[str, np.ndarray]] = {}
+    for scheme in ("random", "spaced"):
+        frame = manifest.loc[manifest["split_scheme"].eq(scheme)].copy()
+        if frame.empty:
+            raise ValueError(f"split manifest lacks {scheme} membership")
+        frame_keys = _sample_keys(frame["station_id"].to_numpy(), frame["hour"].to_numpy())
+        if len(np.unique(frame_keys)) != len(frame_keys):
+            raise ValueError(f"split manifest duplicates a {scheme} station-hour key")
+        mapped = np.asarray([tensor_index.get(str(key), -1) for key in frame_keys], dtype=np.int64)
+        if np.any(mapped < 0):
+            raise ValueError(f"split manifest contains unknown {scheme} station-hour keys")
+        if len(mapped) != len(labels) or len(np.unique(mapped)) != len(labels):
+            raise ValueError(f"split manifest does not cover every {scheme} hourly example once")
+        manifest_labels = pd.to_numeric(frame["fault_hour"], errors="raise").to_numpy(dtype=int)
+        if not np.array_equal(labels[mapped], manifest_labels):
+            raise ValueError(f"split manifest labels disagree with the {scheme} hourly tensor")
+        partitions: dict[str, np.ndarray] = {}
+        for name in ("train", "validation", "test"):
+            indices = np.sort(mapped[frame["split"].eq(name).to_numpy()]).astype(np.int64)
+            if not len(indices):
+                raise ValueError(f"split manifest has an empty {scheme} {name} partition")
+            partitions[name] = indices
+        combined = np.concatenate([partitions[name] for name in ("train", "validation", "test")])
+        if len(np.unique(combined)) != len(labels) or set(combined.tolist()) != set(range(len(labels))):
+            raise ValueError(f"split manifest membership is invalid for {scheme}")
+        for name in ("train", "validation"):
+            values = labels[partitions[name]]
+            if not np.equal(values, 0).any() or not np.equal(values, 1).any():
+                raise ValueError(f"split manifest {scheme} {name} lacks a binary class")
+        result[scheme] = partitions
+    return result
+
+
+@dataclass
+class TensorPartition:
+    features: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+    labels: torch.Tensor | None
+
+    @property
+    def count(self) -> int:
+        return int(self.features[0].shape[0])
+
+
+@dataclass
+class PreparedHourlyRgfnSplit:
+    train: TensorPartition
+    validation: TensorPartition
+    test: TensorPartition
+    scaler: HourlyRgfnScaler
+
+
+def _make_partition(
+    values: dict[str, np.ndarray],
+    labels: np.ndarray,
+    indices: np.ndarray,
+    include_labels: bool,
+) -> TensorPartition:
+    selected = np.asarray(indices, dtype=np.int64)
+    features = tuple(
+        torch.as_tensor(
+            np.ascontiguousarray(np.asarray(values[name], dtype=np.float32)[selected]),
+            dtype=torch.float32,
+            device=DEVICE,
+        )
+        for name in FEATURE_KEYS
+    )
+    target = None
+    if include_labels:
+        target = torch.as_tensor(
+            np.ascontiguousarray(np.asarray(labels, dtype=np.float32)[selected]),
+            dtype=torch.float32,
+            device=DEVICE,
+        )
+    return TensorPartition(features=features, labels=target)
+
+
+def prepare_hourly_rgfn_split(
+    examples: dict[str, np.ndarray],
+    splits: dict[str, np.ndarray],
+) -> PreparedHourlyRgfnSplit:
+    required = {"train", "validation", "test"}
+    if set(splits) != required:
+        raise ValueError("hourly RGFN requires train, validation, and test partitions")
+    x_cont = np.asarray(examples["X_cont"])
+    if x_cont.ndim != 3 or x_cont.shape[1] != 7:
+        raise ValueError("hourly RGFN requires a seven-hour input tensor")
+    labels = np.asarray(examples["y_binary"], dtype=int)
+    scaler = HourlyRgfnScaler.fit(examples, np.asarray(splits["train"], dtype=np.int64))
+    values = scaler.transform(examples)
+    return PreparedHourlyRgfnSplit(
+        train=_make_partition(values, labels, splits["train"], include_labels=True),
+        validation=_make_partition(values, labels, splits["validation"], include_labels=True),
+        test=_make_partition(values, labels, splits["test"], include_labels=False),
+        scaler=scaler,
+    )
+
+
+def _batch_ranges(count: int, batch_size: int):
+    for start in range(0, int(count), int(batch_size)):
+        yield start, min(start + int(batch_size), int(count))
+
+
+def _validation_loss(
+    model: nn.Module,
+    partition: TensorPartition,
+    criterion: nn.Module,
+    batch_size: int,
+) -> float:
+    if partition.labels is None:
+        raise ValueError("validation labels are required")
+    model.eval()
+    total = 0.0
+    with torch.inference_mode():
+        for start, stop in _batch_ranges(partition.count, batch_size):
+            output = model(*[value[start:stop] for value in partition.features])
+            loss = criterion(output["final_fault_logit"], partition.labels[start:stop])
+            total += float(loss.detach().cpu()) * (stop - start)
+    return float(total / max(partition.count, 1))
+
+
+def predict_hourly_rgfn(model: nn.Module, partition: TensorPartition, batch_size: int = 512) -> np.ndarray:
+    model.eval()
+    values: list[np.ndarray] = []
+    with torch.inference_mode():
+        for start, stop in _batch_ranges(partition.count, batch_size):
+            output = model(*[value[start:stop] for value in partition.features])
+            values.append(output["binary_prob"].detach().cpu().numpy().astype(np.float32))
+    return np.concatenate(values, axis=0) if values else np.empty(0, dtype=np.float32)
+
+
+def _copy_state(model: nn.Module) -> dict[str, torch.Tensor]:
+    return {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
+
+
+@dataclass
+class _CudaGraphTrainingStep:
+    graph: torch.cuda.CUDAGraph
+    static_features: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+    static_labels: torch.Tensor
+    batch_size: int
+
+    def stage(
+        self,
+        features: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+        labels: torch.Tensor,
+        indices: torch.Tensor,
+    ) -> None:
+        if int(indices.numel()) != self.batch_size:
+            raise ValueError("CUDA graph staging requires the configured batch size")
+        for target, source in zip(self.static_features, features):
+            torch.index_select(source, 0, indices, out=target)
+        torch.index_select(labels, 0, indices, out=self.static_labels)
+
+    def replay(self) -> None:
+        self.graph.replay()
+
+
+def _make_adam(
+    model: nn.Module,
+    config: HourlyRgfnTrainingConfig,
+    capturable: bool,
+) -> torch.optim.Adam:
+    kwargs: dict[str, object] = {
+        "lr": float(config.learning_rate),
+        "weight_decay": float(config.weight_decay),
+    }
+    if capturable:
+        kwargs["capturable"] = True
+    return torch.optim.Adam(model.parameters(), **kwargs)
+
+
+def _eager_training_step(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    criterion: nn.Module,
+    features: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+    labels: torch.Tensor,
+    set_to_none: bool,
+) -> None:
+    optimizer.zero_grad(set_to_none=set_to_none)
+    output = model(*features)
+    loss = criterion(output["final_fault_logit"], labels)
+    loss.backward()
+    optimizer.step()
+
+
+def _model_device_state(model: nn.Module) -> dict[str, torch.Tensor]:
+    return {name: value.detach().clone() for name, value in model.state_dict().items()}
+
+
+def _restore_model_device_state(model: nn.Module, values: dict[str, torch.Tensor]) -> None:
+    current = model.state_dict()
+    with torch.no_grad():
+        for name, value in current.items():
+            value.copy_(values[name])
+
+
+def _zero_adam_state(optimizer: torch.optim.Optimizer) -> None:
+    with torch.no_grad():
+        for state in optimizer.state.values():
+            for value in state.values():
+                if isinstance(value, torch.Tensor):
+                    value.zero_()
+
+
+def _prepare_cuda_graph_training_step(
+    model: nn.Module,
+    optimizer: torch.optim.Adam,
+    criterion: nn.Module,
+    partition: TensorPartition,
+    batch_size: int,
+) -> _CudaGraphTrainingStep | None:
+    if DEVICE.type != "cuda" or not torch.cuda.is_available() or partition.labels is None:
+        return None
+    if partition.count < int(batch_size):
+        return None
+    static_features = tuple(
+        torch.zeros(
+            (int(batch_size), *value.shape[1:]),
+            dtype=value.dtype,
+            device=value.device,
+        )
+        for value in partition.features
+    )
+    static_labels = torch.zeros(int(batch_size), dtype=partition.labels.dtype, device=partition.labels.device)
+    initial_model = _model_device_state(model)
+    initial_rng = torch.cuda.get_rng_state(device=DEVICE)
+    warmup_stream = torch.cuda.Stream(device=DEVICE)
+    graph = torch.cuda.CUDAGraph()
+    try:
+        warmup_stream.wait_stream(torch.cuda.current_stream(device=DEVICE))
+        with torch.cuda.stream(warmup_stream):
+            for _ in range(3):
+                _eager_training_step(
+                    model,
+                    optimizer,
+                    criterion,
+                    static_features,
+                    static_labels,
+                    set_to_none=False,
+                )
+        torch.cuda.current_stream(device=DEVICE).wait_stream(warmup_stream)
+        with torch.cuda.graph(graph):
+            _eager_training_step(
+                model,
+                optimizer,
+                criterion,
+                static_features,
+                static_labels,
+                set_to_none=False,
+            )
+        _restore_model_device_state(model, initial_model)
+        _zero_adam_state(optimizer)
+        optimizer.zero_grad(set_to_none=False)
+        torch.cuda.set_rng_state(initial_rng, device=DEVICE)
+        return _CudaGraphTrainingStep(
+            graph=graph,
+            static_features=static_features,
+            static_labels=static_labels,
+            batch_size=int(batch_size),
+        )
+    except RuntimeError:
+        _restore_model_device_state(model, initial_model)
+        torch.cuda.set_rng_state(initial_rng, device=DEVICE)
+        return None
+
+
+def _train_candidate(
+    encoder: str,
+    prepared: PreparedHourlyRgfnSplit,
+    config: HourlyRgfnTrainingConfig,
+) -> tuple[nn.Module, dict[str, object]]:
+    if prepared.train.labels is None or prepared.validation.labels is None:
+        raise ValueError("hourly RGFN training requires train and validation labels")
+    if config.batch_size < 1 or config.max_epochs < 1 or config.patience < 1 or config.min_delta < 0.0:
+        raise ValueError("hourly RGFN training values must be positive")
+    set_hourly_rgfn_seed(config.seed)
+    model = build_hourly_rgfn(
+        encoder,
+        n_continuous=int(prepared.train.features[0].shape[-1]),
+        n_static=int(prepared.train.features[3].shape[-1]),
+        n_rule_evidence=int(prepared.train.features[4].shape[-1]),
+        window_hours=int(prepared.train.features[0].shape[1]),
+        mask_mode=str(config.mask_mode),
+    ).to(DEVICE)
+    optimizer = _make_adam(model, config, capturable=DEVICE.type == "cuda")
+    positive_weight = torch.tensor([float(config.fault_class_weight)], dtype=torch.float32, device=DEVICE)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=positive_weight)
+    graph_step = _prepare_cuda_graph_training_step(
+        model,
+        optimizer,
+        criterion,
+        prepared.train,
+        int(config.batch_size),
+    )
+    if graph_step is None and DEVICE.type == "cuda":
+        optimizer = _make_adam(model, config, capturable=False)
+    generator = torch.Generator(device=DEVICE.type)
+    generator.manual_seed(int(config.seed))
+    best_state = _copy_state(model)
+    best_epoch = 0
+    best_loss = float("inf")
+    stale = 0
+    completed = 0
+    for epoch in range(1, int(config.max_epochs) + 1):
+        model.train()
+        permutation = torch.randperm(prepared.train.count, generator=generator, device=DEVICE)
+        for start, stop in _batch_ranges(prepared.train.count, config.batch_size):
+            batch_indices = permutation[start:stop]
+            if graph_step is not None and int(stop - start) == graph_step.batch_size:
+                graph_step.stage(prepared.train.features, prepared.train.labels, batch_indices)
+                graph_step.replay()
+            else:
+                batch_features = tuple(
+                    value.index_select(0, batch_indices) for value in prepared.train.features
+                )
+                batch_labels = prepared.train.labels.index_select(0, batch_indices)
+                _eager_training_step(
+                    model,
+                    optimizer,
+                    criterion,
+                    batch_features,
+                    batch_labels,
+                    set_to_none=graph_step is None,
+                )
+        validation_loss = _validation_loss(model, prepared.validation, criterion, max(int(config.batch_size), 512))
+        completed = epoch
+        if validation_loss < best_loss - float(config.min_delta):
+            best_loss = validation_loss
+            best_epoch = epoch
+            best_state = _copy_state(model)
+            stale = 0
+        else:
+            stale += 1
+        if stale >= int(config.patience):
+            break
+    model.load_state_dict(best_state)
+    return model, {
+        "best_epoch": int(best_epoch),
+        "epochs_completed": int(completed),
+        "best_validation_loss": float(best_loss),
+        "parameter_count": int(sum(parameter.numel() for parameter in model.parameters())),
+        "cuda_graph_used": bool(graph_step is not None),
+        "cuda_graph_batch_size": int(config.batch_size) if graph_step is not None else None,
+    }
+
+
+def _sample_std(values: list[float]) -> float:
+    if len(values) < 2:
+        return float("nan")
+    return float(np.std(np.asarray(values, dtype=float), ddof=1))
+
+
+def metric_summary(rows: list[dict[str, object]]) -> dict[str, object]:
+    if not rows:
+        raise ValueError("metric summary requires rows")
+    result: dict[str, object] = {"runs": int(len(rows))}
+    for name in METRIC_NAMES:
+        values = [float(row[name]) for row in rows]
+        result[name] = float(np.mean(values))
+        result[f"{name}_std"] = _sample_std(values)
+    return result
+
+
+def _aggregate_validation_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    grouped: dict[tuple[float, float], list[dict[str, object]]] = {}
+    for row in rows:
+        key = (float(row["fault_class_weight"]), float(row["threshold"]))
+        grouped.setdefault(key, []).append(row)
+    result = []
+    for (weight, threshold), values in sorted(grouped.items()):
+        metrics = [value["validation"] for value in values]
+        summary = metric_summary(metrics)
+        validation = {name: float(summary[name]) for name in ("precision", "recall", "f1", "accuracy")}
+        validation_std = {name: float(summary[f"{name}_std"]) for name in ("precision", "recall", "f1", "accuracy")}
+        result.append(
+            {
+                "fault_class_weight": float(weight),
+                "threshold": float(threshold),
+                "validation": validation,
+                "validation_std": validation_std,
+                "validation_minimum_metric": float(min(validation[name] for name in ("precision", "recall", "f1"))),
+                "seed_count": int(len(values)),
+            }
+        )
+    return result
+
+
+def save_hourly_rgfn_model(
+    path: Path,
+    model: nn.Module,
+    scaler: HourlyRgfnScaler,
+    encoder: str,
+    config: HourlyRgfnTrainingConfig,
+    selection: dict[str, object],
+) -> Path:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "encoder": str(encoder),
+            "state_dict": _copy_state(model),
+            "scaler": scaler.payload(),
+            "training_config": asdict(config),
+            "selection": selection,
+            "window_hours": int(model.window_hours),
+            "n_continuous": int(model.n_continuous),
+            "n_static": int(model.n_static),
+            "n_rule_evidence": int(model.n_rule_evidence),
+            "mask_mode": str(model.mask_mode),
+            "parameter_count": int(sum(parameter.numel() for parameter in model.parameters())),
+        },
+        destination,
+    )
+    return destination
+
+
+def train_hourly_rgfn_variant(
+    examples: dict[str, np.ndarray],
+    splits: dict[str, np.ndarray],
+    encoder: str,
+    split_name: str,
+    model_dir: Path,
+    seeds: tuple[int, ...] = RGFN_SEEDS,
+    weights: tuple[float, ...] = RGFN_WEIGHTS,
+    thresholds: tuple[float, ...] = RGFN_THRESHOLDS,
+    base_config: HourlyRgfnTrainingConfig | None = None,
+    progress: Callable[[dict[str, object]], None] | None = None,
+) -> dict[str, object]:
+    if not seeds or not weights or not thresholds:
+        raise ValueError("hourly RGFN training requires seeds, weights, and thresholds")
+    prepared = prepare_hourly_rgfn_split(examples, splits)
+    base = HourlyRgfnTrainingConfig() if base_config is None else base_config
+    models: dict[tuple[int, float], nn.Module] = {}
+    candidate_info: dict[tuple[int, float], dict[str, object]] = {}
+    validation_rows: list[dict[str, object]] = []
+    for seed in seeds:
+        for weight in weights:
+            config = replace(base, seed=int(seed), fault_class_weight=float(weight))
+            model, info = _train_candidate(encoder, prepared, config)
+            probabilities = predict_hourly_rgfn(model, prepared.validation)
+            models[(int(seed), float(weight))] = model
+            candidate_info[(int(seed), float(weight))] = {**info, "config": asdict(config)}
+            if progress is not None:
+                progress(
+                    {
+                        "encoder": str(encoder),
+                        "split": str(split_name),
+                        "seed": int(seed),
+                        "fault_class_weight": float(weight),
+                        **info,
+                    }
+                )
+            validation_labels = prepared.validation.labels.detach().cpu().numpy().astype(int)
+            for threshold in thresholds:
+                validation_rows.append(
+                    {
+                        "seed": int(seed),
+                        "fault_class_weight": float(weight),
+                        "threshold": float(threshold),
+                        "validation": binary_metrics(validation_labels, probabilities, float(threshold)),
+                        "best_epoch": int(info["best_epoch"]),
+                        "best_validation_loss": float(info["best_validation_loss"]),
+                    }
+                )
+    validation_grid = _aggregate_validation_rows(validation_rows)
+    best_balanced = select_operating_point(validation_grid, "balanced")
+    selected_weight = float(best_balanced["fault_class_weight"])
+    selected_threshold = float(best_balanced["threshold"])
+    test_labels = np.asarray(examples["y_binary"], dtype=int)[np.asarray(splits["test"], dtype=np.int64)]
+    selected_validation_rows: list[dict[str, object]] = []
+    test_rows: list[dict[str, object]] = []
+    model_paths: list[str] = []
+    selected_epochs: list[int] = []
+    for seed in seeds:
+        model = models[(int(seed), selected_weight)]
+        validation_match = next(
+            row
+            for row in validation_rows
+            if int(row["seed"]) == int(seed)
+            and float(row["fault_class_weight"]) == selected_weight
+            and float(row["threshold"]) == selected_threshold
+        )
+        selected_validation_rows.append(
+            {
+                "seed": int(seed),
+                **validation_match["validation"],
+                "best_epoch": int(validation_match["best_epoch"]),
+                "best_validation_loss": float(validation_match["best_validation_loss"]),
+            }
+        )
+        probabilities = predict_hourly_rgfn(model, prepared.test)
+        test_metric = binary_metrics(test_labels, probabilities, selected_threshold)
+        test_rows.append({"seed": int(seed), **test_metric})
+        selected_epochs.append(int(candidate_info[(int(seed), selected_weight)]["best_epoch"]))
+        model_path = Path(model_dir) / f"hourly_rgfn_{encoder}_{split_name}_seed_{int(seed)}.pt"
+        saved = save_hourly_rgfn_model(
+            model_path,
+            model,
+            prepared.scaler,
+            encoder,
+            replace(base, seed=int(seed), fault_class_weight=selected_weight),
+            {
+                "split": str(split_name),
+                "fault_class_weight": selected_weight,
+                "threshold": selected_threshold,
+                "validation": validation_match["validation"],
+                "test": test_metric,
+            },
+        )
+        model_paths.append(str(saved))
+    parameter_count = int(candidate_info[(int(seeds[0]), selected_weight)]["parameter_count"])
+    result = {
+        "encoder": str(encoder),
+        "split": str(split_name),
+        "parameter_count": parameter_count,
+        "weights": [float(value) for value in weights],
+        "thresholds": [float(value) for value in thresholds],
+        "seed_count": int(len(seeds)),
+        "validation_seed_rows": validation_rows,
+        "validation_grid": validation_grid,
+        "best_balanced": best_balanced,
+        "selected_validation_seed_rows": selected_validation_rows,
+        "selected_validation_summary": metric_summary(
+            [{name: row[name] for name in METRIC_NAMES} for row in selected_validation_rows]
+        ),
+        "test_seed_rows": test_rows,
+        "test_summary": metric_summary(test_rows),
+        "final_test_target_check": target_check(metric_summary(test_rows)),
+        "selected_best_epoch_mean": float(np.mean(selected_epochs)),
+        "selected_best_epoch_std": _sample_std([float(value) for value in selected_epochs]),
+        "test_evaluation_count": int(len(seeds)),
+        "test_evaluation_count_per_seed": 1,
+        "selection_source": "validation",
+        "model_paths": model_paths,
+    }
+    del models
+    if DEVICE.type == "cuda":
+        torch.cuda.empty_cache()
+    return result
+
+
+def load_calibrated_baseline(path: Path) -> dict[str, dict[str, object]]:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    results = payload.get("results", {})
+    output: dict[str, dict[str, object]] = {}
+    for split in ("random", "spaced"):
+        if split not in results:
+            raise KeyError(f"calibrated baseline metrics lack {split}")
+        item = results[split]
+        output[split] = {
+            **{name: float(item["final_test"][name]) for name in METRIC_NAMES},
+            "fault_class_weight": float(item["best_balanced"]["fault_class_weight"]),
+            "threshold": float(item["best_balanced"]["threshold"]),
+            "target_check": item["final_test_target_check"],
+            "test_evaluation_count": int(item["test_evaluation_count"]),
+        }
+    return output
+
+
+def _table_metric(payload: dict[str, object]) -> dict[str, float]:
+    source = payload.get("test_summary", payload)
+    result = {name: float(source[name]) for name in ("precision", "recall", "f1")}
+    for name in ("precision", "recall", "f1"):
+        result[f"{name}_std"] = float(source.get(f"{name}_std", np.nan))
+    return result
+
+
+def master_comparison_frame(
+    baseline: dict[str, dict[str, object]],
+    gru: dict[str, dict[str, object]],
+    conv: dict[str, dict[str, object]],
+) -> pd.DataFrame:
+    rows = []
+    for model_name, source in (("baseline", baseline), ("RGFN-GRU", gru), ("RGFN-CONV", conv)):
+        for split in ("random", "spaced"):
+            if split not in source:
+                raise KeyError(f"comparison source lacks {model_name} {split}")
+            metric = _table_metric(source[split])
+            rows.append({"model": model_name, "split": split, **metric})
+    return pd.DataFrame(rows).sort_values(["split", "model"]).reset_index(drop=True)
+
+
+def spaced_gap_frame(
+    baseline: dict[str, dict[str, object]],
+    gru: dict[str, dict[str, object]],
+    conv: dict[str, dict[str, object]],
+) -> pd.DataFrame:
+    baseline_metric = _table_metric(baseline["spaced"])
+    rows = []
+    for model_name, source in (("RGFN-GRU", gru), ("RGFN-CONV", conv)):
+        metric = _table_metric(source["spaced"])
+        baseline_std = baseline_metric["f1_std"]
+        candidate_std = metric["f1_std"]
+        overlap = np.nan
+        if np.isfinite(baseline_std) and np.isfinite(candidate_std):
+            overlap = bool(
+                max(baseline_metric["f1"] - baseline_std, metric["f1"] - candidate_std)
+                <= min(baseline_metric["f1"] + baseline_std, metric["f1"] + candidate_std)
+            )
+        rows.append(
+            {
+                "model": model_name,
+                "baseline_spaced_f1": baseline_metric["f1"],
+                "rgfn_spaced_f1": metric["f1"],
+                "difference": metric["f1"] - baseline_metric["f1"],
+                "rgfn_f1_std": candidate_std,
+                "baseline_f1_std": baseline_std,
+                "beats_baseline": bool(metric["f1"] > baseline_metric["f1"]),
+                "std_overlap": overlap,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def target_frame(
+    baseline: dict[str, dict[str, object]],
+    gru: dict[str, dict[str, object]],
+    conv: dict[str, dict[str, object]],
+) -> pd.DataFrame:
+    rows = []
+    for model_name, source in (("baseline", baseline), ("RGFN-GRU", gru), ("RGFN-CONV", conv)):
+        for split in ("random", "spaced"):
+            if model_name == "baseline":
+                metric = source[split]
+                check = target_check(metric)
+                any_seed = bool(check["achieved"])
+            else:
+                metric = source[split]["test_summary"]
+                check = target_check(metric)
+                any_seed = bool(
+                    any(target_check(row)["achieved"] for row in source[split]["test_seed_rows"])
+                )
+            rows.append(
+                {
+                    "model": model_name,
+                    "split": split,
+                    "mean_precision": float(metric["precision"]),
+                    "mean_recall": float(metric["recall"]),
+                    "mean_f1": float(metric["f1"]),
+                    "mean_achieved_90_90_90": bool(check["achieved"]),
+                    "any_seed_achieved_90_90_90": any_seed,
+                }
+            )
+    return pd.DataFrame(rows).sort_values(["split", "model"]).reset_index(drop=True)
+
+
+def _variant_detail_frame(result: dict[str, object]) -> pd.DataFrame:
+    validation = result["selected_validation_summary"]
+    test = result["test_summary"]
+    point = result["best_balanced"]
+    return pd.DataFrame(
+        [
+            {
+                "split": result["split"],
+                "fault_class_weight": point["fault_class_weight"],
+                "threshold": point["threshold"],
+                "validation_precision": validation["precision"],
+                "validation_precision_std": validation["precision_std"],
+                "validation_recall": validation["recall"],
+                "validation_recall_std": validation["recall_std"],
+                "validation_f1": validation["f1"],
+                "validation_f1_std": validation["f1_std"],
+                "test_precision": test["precision"],
+                "test_precision_std": test["precision_std"],
+                "test_recall": test["recall"],
+                "test_recall_std": test["recall_std"],
+                "test_f1": test["f1"],
+                "test_f1_std": test["f1_std"],
+                "tp": test["tp"],
+                "tp_std": test["tp_std"],
+                "fp": test["fp"],
+                "fp_std": test["fp_std"],
+                "fn": test["fn"],
+                "fn_std": test["fn_std"],
+                "tn": test["tn"],
+                "tn_std": test["tn_std"],
+                "parameter_count": result["parameter_count"],
+                "best_epoch_mean": result["selected_best_epoch_mean"],
+                "best_epoch_std": result["selected_best_epoch_std"],
+            }
+        ]
+    )
+
+
+def comparison_report(
+    baseline: dict[str, dict[str, object]],
+    gru: dict[str, dict[str, object]],
+    conv: dict[str, dict[str, object]],
+) -> str:
+    master = master_comparison_frame(baseline, gru, conv)
+    gap = spaced_gap_frame(baseline, gru, conv)
+    targets = target_frame(baseline, gru, conv)
+    parts = [
+        "HOUR-LEVEL RGFN COMPARISON",
+        "",
+        f"device={DEVICE}",
+        "SELECTION",
+        "RGFN weights and thresholds are selected from aggregate validation metrics across five seeds.",
+        "No candidate test metric is used for weight or threshold selection.",
+        "Each selected seed model is evaluated once on its test partition.",
+        "",
+        "MASTER TEST COMPARISON",
+        master.to_string(index=False),
+        "",
+        "RGFN-GRU SELECTED POINTS AND TEST CONFUSION",
+        pd.concat([_variant_detail_frame(gru[name]) for name in ("random", "spaced")], ignore_index=True).to_string(index=False),
+        "",
+        "RGFN-CONV SELECTED POINTS AND TEST CONFUSION",
+        pd.concat([_variant_detail_frame(conv[name]) for name in ("random", "spaced")], ignore_index=True).to_string(index=False),
+        "",
+        "SPACED F1 COMPARISON",
+        gap.to_string(index=False),
+        "std_overlap is unavailable because the carried baseline has one saved calibration evaluation and no seed standard deviation.",
+        "",
+        "TEST TARGET CHECK",
+        targets.to_string(index=False),
+        "",
+        "PARAMETER COUNTS",
+        pd.DataFrame(
+            [
+                {"model": "RGFN-GRU", "parameter_count": gru["random"]["parameter_count"]},
+                {"model": "RGFN-CONV", "parameter_count": conv["random"]["parameter_count"]},
+            ]
+        ).to_string(index=False),
+    ]
+    return "\n".join(parts)

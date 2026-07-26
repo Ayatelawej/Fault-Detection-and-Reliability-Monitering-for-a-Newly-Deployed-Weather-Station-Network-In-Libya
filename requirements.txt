@@ -1,0 +1,14 @@
+pandas
+numpy
+pyarrow
+scipy
+scikit-learn
+torch
+matplotlib
+plotly
+streamlit
+requests
+tenacity
+PyYAML
+jupyter
+pytest
