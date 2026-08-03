@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.workflows.train_hourly_baseline import main as run_baseline
+from src.workflows.train_hourly_baseline import reason_codes_main as run_reason_codes
 from src.workflows.train_hourly_calibration import main as run_calibration
 from src.workflows.train_hourly_rgfn import main as run_rgfn
 from src.workflows.train_hourly_split_comparison import main as run_split_comparison
@@ -19,6 +20,7 @@ RUNNERS: dict[str, Callable[[list[str] | None], None]] = {
     "split-comparison": run_split_comparison,
     "calibration": run_calibration,
     "rgfn": run_rgfn,
+    "reason-codes": run_reason_codes,
 }
 
 

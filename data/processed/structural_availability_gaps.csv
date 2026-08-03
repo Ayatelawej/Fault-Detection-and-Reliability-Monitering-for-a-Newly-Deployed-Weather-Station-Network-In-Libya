@@ -1,0 +1,5 @@
+gap_id,station_id,preceding_hour_utc,following_hour_utc,gap_duration_hours,first_missing_hour_utc,last_missing_hour_utc,omitted_hour_count,preceding_row_state,following_row_state
+I90583612__20260228T23__0480h,I90583612,2026-02-28 23:00:00+00:00,2026-03-21 00:00:00+00:00,481,2026-03-01 00:00:00+00:00,2026-03-20 23:00:00+00:00,480,true_outage_candidate,online_complete
+IDERNA7__20260228T23__0234h,IDERNA7,2026-02-28 23:00:00+00:00,2026-03-10 18:00:00+00:00,235,2026-03-01 00:00:00+00:00,2026-03-10 17:00:00+00:00,234,true_outage_candidate,online_partial_missing
+IMURQU6__20260228T23__0378h,IMURQU6,2026-02-28 23:00:00+00:00,2026-03-16 18:00:00+00:00,379,2026-03-01 00:00:00+00:00,2026-03-16 17:00:00+00:00,378,true_outage_candidate,online_complete
+ITRIPO32__20260228T23__0362h,ITRIPO32,2026-02-28 23:00:00+00:00,2026-03-16 02:00:00+00:00,363,2026-03-01 00:00:00+00:00,2026-03-16 01:00:00+00:00,362,true_outage_candidate,online_complete

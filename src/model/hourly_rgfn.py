@@ -61,6 +61,8 @@ class HourlyReliabilityAwareGatedFusionNetwork(nn.Module):
         window_hours: int | None = None,
         dropout: float | None = None,
         mask_mode: str | None = None,
+        output_dim: int = 1,
+        mechanism_count: int | None = None,
     ) -> None:
         super().__init__()
         base = config or HourlyRgfnConfig()
@@ -73,10 +75,22 @@ class HourlyReliabilityAwareGatedFusionNetwork(nn.Module):
         self.window_hours = int(base.window_hours if window_hours is None else window_hours)
         self.sensor_hidden_size = int(base.sensor_hidden_size)
         self.evidence_embed_size = int(base.evidence_embed_size)
+        self.output_dim = int(output_dim)
+        self.mechanism_count = None if mechanism_count is None else int(mechanism_count)
         resolved_dropout = float(base.dropout if dropout is None else dropout)
         self.mask_mode = str(base.mask_mode if mask_mode is None else mask_mode)
         if self.n_continuous < 1 or self.n_static < 0 or self.n_rule_evidence < 1:
             raise ValueError("hourly RGFN feature widths must be valid")
+        if self.output_dim < 1:
+            raise ValueError("hourly RGFN output_dim must be positive")
+        if self.output_dim == 1 and self.mechanism_count is not None:
+            raise ValueError("a binary hourly RGFN cannot define mechanism_count")
+        if self.output_dim > 1 and (
+            self.mechanism_count is None
+            or self.mechanism_count < 1
+            or self.mechanism_count >= self.output_dim
+        ):
+            raise ValueError("a multi-label hourly RGFN needs a mechanism_count within its output width")
         if self.window_hours < 1:
             raise ValueError("hourly RGFN window_hours must be positive")
         if not 0.0 <= resolved_dropout < 1.0:
@@ -107,7 +121,7 @@ class HourlyReliabilityAwareGatedFusionNetwork(nn.Module):
                 nn.ReLU(),
             )
             self.sensor_projection = nn.Linear(CONV_SECOND_CHANNELS, self.sensor_hidden_size)
-        self.temporal_head = nn.Linear(self.sensor_hidden_size, 1)
+        self.temporal_head = nn.Linear(self.sensor_hidden_size, self.output_dim)
         self.rule_net = nn.Sequential(
             nn.Linear(self.n_rule_evidence, int(base.evidence_hidden_size)),
             nn.ReLU(),
@@ -116,12 +130,12 @@ class HourlyReliabilityAwareGatedFusionNetwork(nn.Module):
             nn.ReLU(),
             nn.Dropout(resolved_dropout),
         )
-        self.rule_head = nn.Linear(self.evidence_embed_size, 1)
+        self.rule_head = nn.Linear(self.evidence_embed_size, self.output_dim)
         fusion_width = self.sensor_hidden_size + self.evidence_embed_size + self.n_static
         self.gate = nn.Sequential(
             nn.Linear(fusion_width, int(base.fusion_hidden_size)),
             nn.ReLU(),
-            nn.Linear(int(base.fusion_hidden_size), 1),
+            nn.Linear(int(base.fusion_hidden_size), self.output_dim),
         )
 
     @property
@@ -197,19 +211,37 @@ class HourlyReliabilityAwareGatedFusionNetwork(nn.Module):
         static_values = torch.nan_to_num(static, nan=0.0, posinf=0.0, neginf=0.0)
         evidence_embedding = self.rule_net(evidence_values)
         fusion = torch.cat([temporal_embedding, evidence_embedding, static_values], dim=-1)
-        temporal_logit = self.temporal_head(temporal_embedding).squeeze(-1)
-        rule_logit = self.rule_head(evidence_embedding).squeeze(-1)
-        alpha = torch.sigmoid(self.gate(fusion).squeeze(-1))
-        final_fault_logit = alpha * temporal_logit + (1.0 - alpha) * rule_logit
-        probability = torch.sigmoid(final_fault_logit)
+        if self.output_dim == 1:
+            temporal_logit = self.temporal_head(temporal_embedding).squeeze(-1)
+            rule_logit = self.rule_head(evidence_embedding).squeeze(-1)
+            alpha = torch.sigmoid(self.gate(fusion).squeeze(-1))
+            final_fault_logit = alpha * temporal_logit + (1.0 - alpha) * rule_logit
+            probability = torch.sigmoid(final_fault_logit)
+            return {
+                "final_fault_logit": final_fault_logit,
+                "fault_logit": final_fault_logit,
+                "binary_prob": probability,
+                "temporal_logit": temporal_logit,
+                "sensor_logit": temporal_logit,
+                "rule_logit": rule_logit,
+                "evidence_logit": rule_logit,
+                "alpha": alpha,
+            }
+        temporal_logits = self.temporal_head(temporal_embedding)
+        rule_logits = self.rule_head(evidence_embedding)
+        alpha = torch.sigmoid(self.gate(fusion))
+        reason_code_logits = alpha * temporal_logits + (1.0 - alpha) * rule_logits
+        probabilities = torch.sigmoid(reason_code_logits)
+        mechanism_count = int(self.mechanism_count)
         return {
-            "final_fault_logit": final_fault_logit,
-            "fault_logit": final_fault_logit,
-            "binary_prob": probability,
-            "temporal_logit": temporal_logit,
-            "sensor_logit": temporal_logit,
-            "rule_logit": rule_logit,
-            "evidence_logit": rule_logit,
+            "reason_code_logits": reason_code_logits,
+            "reason_code_probabilities": probabilities,
+            "mechanism_logits": reason_code_logits[:, :mechanism_count],
+            "component_logits": reason_code_logits[:, mechanism_count:],
+            "mechanism_probabilities": probabilities[:, :mechanism_count],
+            "component_probabilities": probabilities[:, mechanism_count:],
+            "temporal_logits": temporal_logits,
+            "rule_logits": rule_logits,
             "alpha": alpha,
         }
 
@@ -221,7 +253,10 @@ class HourlyReliabilityAwareGatedFusionNetwork(nn.Module):
         static: torch.Tensor,
         rule_evidence: torch.Tensor,
     ) -> torch.Tensor:
-        return self(x_cont, mask, time_since_last, static, rule_evidence)["binary_prob"]
+        output = self(x_cont, mask, time_since_last, static, rule_evidence)
+        if self.output_dim == 1:
+            return output["binary_prob"]
+        return output["reason_code_probabilities"]
 
 
 class HourlyRgfnGru(HourlyReliabilityAwareGatedFusionNetwork):

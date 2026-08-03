@@ -1,0 +1,220 @@
+STATION HEALTH SCORE
+
+This is a transparent current-state score, not a trained model and not a forecast.
+Every scored component uses information available at or before the completed station-hour.
+
+WEIGHTED DEFINITION
+health_total = 30*availability + 20*sensor_completeness + 25*fault_evidence_burden + 15*reference_consistency + 10*stability
+All five components are normalized to 0–1 before their fixed design weights are applied.
+Fault burden is a trailing, exponentially recency-weighted (24-hour half-life) rate of causally reconstructed physical-limit, stuck, or deviation evidence. It does not use reviewed episode labels. Stability counts only full/partial communication failures and hard physical/stuck evidence as recurring operational events, so isolated contextual deviations do not become a sequence of artificial event starts.
+Reference consistency uses exact-hour external reference residuals, prior-only residual history, and a causal fleet-relative pressure-persistence check. Completed Layer 2 intervals are not score inputs; where supplied, they only select a retrospective sanity-check plot.
+Spatial neighbour availability is not an input to this score, so stations without peers receive no penalty.
+Active outages apply a fixed causal duration multiplier to all five normalized components before weighting: exp(-d/24) for a full outage and exp(-d/72) for a partial outage, where d is the consecutive active duration in completed hours. These fixed 24-hour and 72-hour decay constants are engineering design choices, not fitted or tuned parameters. The multiplier is 1 for a transmitting station, preserves the weighted-component sum, and lets a newly dropped station remain distinguishable from a prolonged outage.
+For a partial outage, d is the consecutive period in which the station has remained partially degraded; the separate sensor-completeness component and absent-group fields retain the group-level severity evidence.
+Within one continuous full or partial outage, the pre-duration weighted score is causally capped at its prior active-outage value. This prevents missing telemetry from making a station appear healthier simply because fault and reference evidence are temporarily unavailable.
+
+OUTAGE-DURATION CURVE
+ duration_hours  full_outage_multiplier  partial_outage_multiplier
+              1                0.959189                   0.986207
+              6                0.778801                   0.920044
+             24                0.367879                   0.716531
+            168                0.000912                   0.096972
+
+SELECTED OUTAGE TRAJECTORY
+station=IDERNA7; start=2025-07-08 14:00:00+00:00; end=2025-08-11 11:00:00+00:00; duration_hours=814; recovered=True
+
+SCORE STATUS ACCOUNTING
+       health_status  count
+              scored 127659
+         full_outage  37654
+insufficient_history   4342
+
+1. TOTAL HEALTH DISTRIBUTION
+     n          min       p25   median      mean       p75       max
+165313 5.908946e-50 54.081526 67.12143 59.808601 75.911202 97.989769
+Histogram:
+score_band  count  fraction
+      0-10  15377  0.093017
+     10-20   3300  0.019962
+     20-30   3618  0.021886
+     30-40   4712  0.028504
+     40-50   7831  0.047371
+     50-60  21039  0.127268
+     60-70  39598  0.239533
+     70-80  46411  0.280746
+     80-90  22480  0.135984
+    90-100    947  0.005729
+
+2. COMPONENT DISTRIBUTIONS
+                   component      n          min       p25    median      mean       p75       max  fraction_le_0_05  fraction_ge_0_95
+         health_availability 165313 0.000000e+00  0.570946  0.857143  0.716290  0.982143  1.000000          0.102551          0.350220
+  health_sensor_completeness 165313 0.000000e+00  0.652672  1.000000  0.798803  1.000000  1.000000          0.079407          0.650965
+         health_fault_burden 165313 0.000000e+00  0.278429  0.552581  0.506598  0.748321  1.000000          0.133577          0.038648
+health_reference_consistency 165313 0.000000e+00  0.288279  0.535833  0.485087  0.697234  1.000000          0.155686          0.035672
+            health_stability 165313 0.000000e+00  0.022917  0.231250  0.240260  0.386111  1.000000          0.285410          0.004815
+                health_total 165313 5.908946e-50 54.081526 67.121430 59.808601 75.911202 97.989769          0.050686          0.933242
+
+3. PER-STATION HEALTH RANKING
+station_id  health_total_mean  health_total_min  health_total_max  health_total_median  scored_hours  health_availability_mean  health_sensor_completeness_mean  health_fault_burden_mean  health_reference_consistency_mean  health_stability_mean
+   INUQAT8          75.262256      1.022637e+01         95.508778            76.715010          6183                  0.925076                         0.980516                  0.600021                           0.560006               0.449903
+  IMISRA13          73.257131      3.752775e+00         91.827385            76.670790          6300                  0.870330                         0.958208                  0.657909                           0.520058               0.373448
+  IJABAL14          72.801935      3.401845e+00         91.369841            75.755961          6273                  0.905867                         0.970265                  0.643037                           0.369747               0.459849
+  IJABAL15          72.499652      3.974269e+00         93.491347            74.758382          6273                  0.891215                         0.942102                  0.567760                           0.572963               0.413269
+   IJANZO3          72.208837      9.225053e+00         92.058580            75.098705          6198                  0.873834                         0.934938                  0.585604                           0.603764               0.359849
+   IJANZO2          69.608547      4.383215e+00         94.468047            71.850122          6181                  0.871417                         0.917287                  0.561844                           0.525406               0.319313
+   IZAWIY7          68.554226      7.545972e+00         91.117472            70.982104          6232                  0.846582                         0.934816                  0.535797                           0.587244               0.225685
+  INUQAT10          68.545587      1.386093e-02         93.445028            72.488246          6105                  0.837249                         0.908985                  0.553866                           0.556013               0.306157
+   INUQAT9          68.530159      9.700075e+00         90.650724            70.963714          6163                  0.808681                         0.875411                  0.617820                           0.629380               0.187532
+  IJABAL16          65.925946      1.425487e+00         91.633038            69.189356          6244                  0.801722                         0.903880                  0.494717                           0.571905               0.285019
+   IBARAS3          65.822834      9.280372e+00         96.308987            67.649548          6245                  0.841780                         0.846295                  0.497156                           0.578146               0.254244
+   IZAWIY5          65.379596      2.026507e-01         88.862657            68.993387          6267                  0.847467                         0.895368                  0.494282                           0.401069               0.367513
+   ITAHLI1          65.105557      5.710270e+00         89.211251            65.750473          6210                  0.862341                         0.956777                  0.384780                           0.592363               0.159484
+  ITRIPO33          65.063087      8.566446e-01         97.989769            69.107131          6125                  0.827025                         0.755612                  0.520014                           0.579498               0.344728
+  IALWAH18          64.973928      8.603734e-02         93.381098            72.863180          7251                  0.769720                         0.834893                  0.601174                           0.500028               0.265470
+   IMURQU7          64.734130      3.362906e+00         91.063228            67.522605          6221                  0.812701                         0.934612                  0.456688                           0.484280               0.297945
+  IMISRA12          63.655265      1.387194e+01         91.356377            67.566397          6009                  0.820816                         0.751765                  0.570991                           0.508474               0.209359
+  IJABAL13          63.533601      2.563612e+00         92.764329            65.416659          6290                  0.856457                         0.836007                  0.540491                           0.349650               0.236273
+   IBIRAL3          62.204234      2.163599e-01         95.231898            62.799421          6267                  0.860948                         0.840871                  0.568627                           0.162970               0.289815
+   INALUT3          56.865496      5.018746e-02         85.786092            60.386073          6195                  0.651357                         0.781390                  0.517793                           0.573494               0.014977
+   IMURQU5          52.686595      4.583593e-13         86.710465            63.797325          6274                  0.581018                         0.712815                  0.485622                           0.477769               0.169266
+   IMURQU6          47.440831      8.167523e-11         87.926230            60.598924          6266                  0.509261                         0.636821                  0.450789                           0.494842               0.073421
+   IDERNA7          41.379778      7.451416e-14         85.450230            52.606493          8962                  0.423221                         0.574218                  0.385680                           0.457458               0.069489
+  ITRIPO32          30.056103      3.425857e-12         88.795991            21.152198          6176                  0.253456                         0.456971                  0.293717                           0.318020               0.119977
+ I90583612          26.549549      2.595340e-10         80.057024            19.161945          6223                  0.118189                         0.410885                  0.351423                           0.368259               0.047672
+   IJANZO4          19.432636      5.908946e-50         72.662589             0.971726          6180                  0.072942                         0.302596                  0.270175                           0.286733               0.013707
+
+4. ABSOLUTE HEALTH CHANGE OVER TIME
+ horizon_hours      n  min      p25   median     mean       p75       max       p90       p99  fraction_gt_1  fraction_gt_5  fraction_gt_10
+             6 165157  0.0 1.162652 3.045833 5.137360  6.229628 77.312196 11.462391 46.086507       0.775190       0.323674        0.129017
+            12 165001  0.0 1.778738 4.596366 7.657564  9.434932 77.186824 18.270978 53.170683       0.829504       0.470227        0.232283
+            24 164689  0.0 2.152112 5.671220 9.682277 11.831150 81.929841 25.571249 55.421532       0.850221       0.541184        0.302006
+
+5. HEALTH-BAND CROSSINGS
+ horizon_hours  eligible_station_hours  band_crossings  crossing_fraction
+             6                  165157           36637           0.221831
+            12                  165001           51179           0.310174
+            24                  164689           59116           0.358955
+Bands: Healthy 80–100; Watch 60–<80; Degraded 40–<60; Critical <40.
+
+6. HARD-ZERO BASELINE VERSUS PROGRESSIVE-DURATION SCORE
+               section                 metric  hard_zero_baseline  progressive_duration    difference score_band  horizon_hours
+          distribution                      n       165313.000000          1.653130e+05  0.000000e+00        NaN            NaN
+          distribution                    min            0.000000          5.908946e-50  5.908946e-50        NaN            NaN
+          distribution                    p25           52.161435          5.408153e+01  1.920092e+00        NaN            NaN
+          distribution                 median           67.752855          6.712143e+01 -6.314247e-01        NaN            NaN
+          distribution                   mean           54.878003          5.980860e+01  4.930598e+00        NaN            NaN
+          distribution                    p75           76.118969          7.591120e+01 -2.077663e-01        NaN            NaN
+          distribution                    max           97.989769          9.798977e+01  0.000000e+00        NaN            NaN
+          distribution        exact_zero_rows        37654.000000          0.000000e+00 -3.765400e+04        NaN            NaN
+          distribution    exact_zero_fraction            0.227774          0.000000e+00 -2.277740e-01        NaN            NaN
+             histogram                  count        37654.000000          1.537700e+04 -2.227700e+04       0-10            NaN
+             histogram               fraction            0.227774          9.301749e-02 -1.347565e-01       0-10            NaN
+             histogram                  count            0.000000          3.300000e+03  3.300000e+03      10-20            NaN
+             histogram               fraction            0.000000          1.996213e-02  1.996213e-02      10-20            NaN
+             histogram                  count            2.000000          3.618000e+03  3.616000e+03      20-30            NaN
+             histogram               fraction            0.000012          2.188576e-02  2.187366e-02      20-30            NaN
+             histogram                  count          181.000000          4.712000e+03  4.531000e+03      30-40            NaN
+             histogram               fraction            0.001095          2.850351e-02  2.740861e-02      30-40            NaN
+             histogram                  count         2050.000000          7.831000e+03  5.781000e+03      40-50            NaN
+             histogram               fraction            0.012401          4.737075e-02  3.497003e-02      40-50            NaN
+             histogram                  count        15045.000000          2.103900e+04  5.994000e+03      50-60            NaN
+             histogram               fraction            0.091009          1.272677e-01  3.625849e-02      50-60            NaN
+             histogram                  count        37995.000000          3.959800e+04  1.603000e+03      60-70            NaN
+             histogram               fraction            0.229837          2.395335e-01  9.696757e-03      60-70            NaN
+             histogram                  count        48539.000000          4.641100e+04 -2.128000e+03      70-80            NaN
+             histogram               fraction            0.293619          2.807462e-01 -1.287255e-02      70-80            NaN
+             histogram                  count        22900.000000          2.248000e+04 -4.200000e+02      80-90            NaN
+             histogram               fraction            0.138525          1.359845e-01 -2.540635e-03      80-90            NaN
+             histogram                  count          947.000000          9.470000e+02  0.000000e+00     90-100            NaN
+             histogram               fraction            0.005729          5.728527e-03  0.000000e+00     90-100            NaN
+absolute_health_change                      n       165157.000000          1.651570e+05  0.000000e+00        NaN            6.0
+absolute_health_change                    min            0.000000          0.000000e+00  0.000000e+00        NaN            6.0
+absolute_health_change                    p25            0.420915          1.162652e+00  7.417368e-01        NaN            6.0
+absolute_health_change                 median            2.068029          3.045833e+00  9.778041e-01        NaN            6.0
+absolute_health_change                   mean            8.734891          5.137360e+00 -3.597531e+00        NaN            6.0
+absolute_health_change                    p75            4.989181          6.229628e+00  1.240448e+00        NaN            6.0
+absolute_health_change                    max           91.356377          7.731220e+01 -1.404418e+01        NaN            6.0
+absolute_health_change                    p90           15.345975          1.146239e+01 -3.883584e+00        NaN            6.0
+absolute_health_change                    p99           79.315159          4.608651e+01 -3.322865e+01        NaN            6.0
+absolute_health_change          fraction_gt_1            0.656702          7.751897e-01  1.184873e-01        NaN            6.0
+absolute_health_change          fraction_gt_5            0.249520          3.236738e-01  7.415368e-02        NaN            6.0
+absolute_health_change         fraction_gt_10            0.125341          1.290166e-01  3.675291e-03        NaN            6.0
+absolute_health_change                      n       165001.000000          1.650010e+05  0.000000e+00        NaN           12.0
+absolute_health_change                    min            0.000000          0.000000e+00  0.000000e+00        NaN           12.0
+absolute_health_change                    p25            0.809940          1.778738e+00  9.687977e-01        NaN           12.0
+absolute_health_change                 median            3.361930          4.596366e+00  1.234436e+00        NaN           12.0
+absolute_health_change                   mean           12.185858          7.657564e+00 -4.528294e+00        NaN           12.0
+absolute_health_change                    p75            7.803462          9.434932e+00  1.631470e+00        NaN           12.0
+absolute_health_change                    max           91.881876          7.718682e+01 -1.469505e+01        NaN           12.0
+absolute_health_change                    p90           62.163690          1.827098e+01 -4.389271e+01        NaN           12.0
+absolute_health_change                    p99           81.086047          5.317068e+01 -2.791536e+01        NaN           12.0
+absolute_health_change          fraction_gt_1            0.729729          8.295041e-01  9.977515e-02        NaN           12.0
+absolute_health_change          fraction_gt_5            0.379792          4.702275e-01  9.043582e-02        NaN           12.0
+absolute_health_change         fraction_gt_10            0.198568          2.322834e-01  3.371495e-02        NaN           12.0
+absolute_health_change                      n       164689.000000          1.646890e+05  0.000000e+00        NaN           24.0
+absolute_health_change                    min            0.000000          0.000000e+00  0.000000e+00        NaN           24.0
+absolute_health_change                    p25            1.332919          2.152112e+00  8.191926e-01        NaN           24.0
+absolute_health_change                 median            4.916956          5.671220e+00  7.542631e-01        NaN           24.0
+absolute_health_change                   mean           15.723479          9.682277e+00 -6.041203e+00        NaN           24.0
+absolute_health_change                    p75           11.737369          1.183115e+01  9.378152e-02        NaN           24.0
+absolute_health_change                    max           92.295538          8.192984e+01 -1.036570e+01        NaN           24.0
+absolute_health_change                    p90           66.759973          2.557125e+01 -4.118872e+01        NaN           24.0
+absolute_health_change                    p99           82.086137          5.542153e+01 -2.666460e+01        NaN           24.0
+absolute_health_change          fraction_gt_1            0.776208          8.502207e-01  7.401223e-02        NaN           24.0
+absolute_health_change          fraction_gt_5            0.495151          5.411837e-01  4.603222e-02        NaN           24.0
+absolute_health_change         fraction_gt_10            0.289400          3.020056e-01  1.260558e-02        NaN           24.0
+ health_band_crossings eligible_station_hours       165157.000000          1.651570e+05  0.000000e+00        NaN            6.0
+ health_band_crossings         band_crossings        35667.000000          3.663700e+04  9.700000e+02        NaN            6.0
+ health_band_crossings      crossing_fraction            0.215958          2.218313e-01  5.873199e-03        NaN            6.0
+ health_band_crossings eligible_station_hours       165001.000000          1.650010e+05  0.000000e+00        NaN           12.0
+ health_band_crossings         band_crossings        48442.000000          5.117900e+04  2.737000e+03        NaN           12.0
+ health_band_crossings      crossing_fraction            0.293586          3.101739e-01  1.658778e-02        NaN           12.0
+ health_band_crossings eligible_station_hours       164689.000000          1.646890e+05  0.000000e+00        NaN           24.0
+ health_band_crossings         band_crossings        60510.000000          5.911600e+04 -1.394000e+03        NaN           24.0
+ health_band_crossings      crossing_fraction            0.367420          3.589554e-01 -8.464439e-03        NaN           24.0
+Per-station ranking comparison:
+station_id  health_total_mean_hard_zero  hard_zero_rank  health_total_mean_progressive  progressive_rank  mean_score_difference  rank_difference
+   INUQAT8                    72.431443               1                      75.262256                 1               2.830812                0
+  IMISRA13                    68.747923               5                      73.257131                 2               4.509208               -3
+  IJABAL14                    69.631541               2                      72.801935                 3               3.170394                1
+  IJABAL15                    69.112896               3                      72.499652                 4               3.386755                1
+   IJANZO3                    68.259016               6                      72.208837                 5               3.949821               -1
+   IJANZO2                    65.952487               7                      69.608547                 6               3.656060               -1
+   IZAWIY7                    63.435908              11                      68.554226                 7               5.118318               -4
+  INUQAT10                    64.703421               8                      68.545587                 8               3.842166                0
+   INUQAT9                    62.883979              12                      68.530159                 9               5.646180               -3
+  IJABAL16                    60.160391              18                      65.925946                10               5.765555               -8
+   IBARAS3                    62.227938              14                      65.822834                11               3.594896               -3
+   IZAWIY5                    62.520436              13                      65.379596                12               2.859160               -1
+   ITAHLI1                    60.553665              16                      65.105557                13               4.551892               -3
+  ITRIPO33                    63.955301               9                      65.063087                14               1.107786                5
+  IALWAH18                    68.982943               4                      64.973928                15              -4.009015               11
+   IMURQU7                    59.482181              19                      64.734130                16               5.251948               -3
+  IMISRA12                    63.828770              10                      63.655265                17              -0.173505                7
+  IJABAL13                    61.676736              15                      63.533601                18               1.856865                3
+   IBIRAL3                    60.418748              17                      62.204234                19               1.785486                2
+   INALUT3                    46.548991              20                      56.865496                20              10.316504                0
+   IMURQU5                    45.802311              21                      52.686595                21               6.884283                0
+   IMURQU6                    39.566410              22                      47.440831                22               7.874421                0
+   IDERNA7                    32.946760              23                      41.379778                23               8.433018                0
+  ITRIPO32                    22.125222              24                      30.056103                24               7.930881                0
+ I90583612                    11.257450              25                      26.549549                25              15.292099                0
+   IJANZO4                     6.843224              26                      19.432636                26              12.589412                0
+
+7. CONTRASTING TIME-SERIES SELECTION
+stable: INUQAT8
+confirmed_offset: IBIRAL3
+heavy_outage: IJANZO4
+A confirmed-offset case is selected from Layer 2 only for the visual sanity check; its reviewed interval does not change the score.
+
+8. COMPONENT CORRELATION
+                              health_availability  health_sensor_completeness  health_fault_burden  health_reference_consistency  health_stability
+health_availability                      1.000000                    0.801669             0.422769                      0.322395          0.547054
+health_sensor_completeness               0.801669                    1.000000             0.503211                      0.476272          0.565364
+health_fault_burden                      0.422769                    0.503211             1.000000                      0.396173          0.325122
+health_reference_consistency             0.322395                    0.476272             0.396173                      1.000000          0.126432
+health_stability                         0.547054                    0.565364             0.325122                      0.126432          1.000000
+
+DELETE-THE-FUTURE VALIDATION
+ sample_rows_validated  fields_validated  comparisons  failed_comparisons  all_passed
+                    16                25          400                   0        True

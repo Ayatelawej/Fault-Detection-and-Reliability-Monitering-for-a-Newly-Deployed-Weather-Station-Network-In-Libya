@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
-from typing import Callable
+import time
+from typing import Callable, Mapping
 import warnings
 
 import numpy as np
@@ -11,9 +12,25 @@ import pandas as pd
 import torch
 from torch import nn
 
-from src.model.hourly_baseline import binary_metrics
+from src.model.hourly_baseline import (
+    binary_metrics,
+    build_reason_code_cv_folds,
+    reason_code_axis_summary,
+    reason_code_cv_group_ids,
+    reason_code_metrics,
+    resolve_reason_code_class_weight,
+    select_reason_code_threshold,
+    select_reason_code_threshold_mean_fold_f1,
+)
 from src.model.hourly_calibration import CALIBRATION_THRESHOLDS, select_operating_point, target_check
-from src.model.hourly_rgfn import ENCODER_CONV, ENCODER_GRU, MASK_MODE_PER_HOUR, build_hourly_rgfn, set_hourly_rgfn_seed
+from src.model.hourly_rgfn import (
+    ENCODER_CONV,
+    ENCODER_GRU,
+    MASK_MODE_PER_HOUR,
+    HourlyRgfnConfig,
+    build_hourly_rgfn,
+    set_hourly_rgfn_seed,
+)
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -35,6 +52,43 @@ class HourlyRgfnTrainingConfig:
     patience: int = 10
     min_delta: float = 1e-4
     mask_mode: str = MASK_MODE_PER_HOUR
+
+
+@dataclass(frozen=True)
+class HourlyReasonCodeRgfnConfig:
+    seed: int = 0
+    cv_seed: int = 2026
+    learning_rate: float = 1e-3
+    weight_decay: float = 1e-4
+    batch_size: int = 64
+    max_epochs: int = 200
+    patience: int = 15
+    min_delta: float = 1e-4
+    sensor_hidden_size: int = 48
+    evidence_hidden_size: int = 16
+    evidence_embed_size: int = 16
+    gate_hidden_size: int = 8
+    dropout: float = 0.3
+    gate_l1: float = 0.0
+    encoder: str = ENCODER_GRU
+    mask_mode: str = MASK_MODE_PER_HOUR
+
+
+@dataclass
+class FittedReasonCodeRgfn:
+    split_scheme: str
+    model: nn.Module
+    scaler: "HourlyRgfnScaler"
+    config: HourlyReasonCodeRgfnConfig
+    mechanism_count: int
+    label_names: np.ndarray
+    thresholds: np.ndarray
+    positive_class_weights: np.ndarray
+    train_support: np.ndarray
+    validation_support: np.ndarray
+    validation_metrics: list[dict[str, object]]
+    selection_trace: list[dict[str, object]]
+    training: dict[str, object]
 
 
 def _center_scale(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -215,6 +269,870 @@ def _make_partition(
             device=DEVICE,
         )
     return TensorPartition(features=features, labels=target)
+
+
+def reason_code_rgfn_config_from_arm2(
+    values: Mapping[str, object],
+    seed: int = 0,
+) -> HourlyReasonCodeRgfnConfig:
+    required = {
+        "learning_rate",
+        "weight_decay",
+        "batch_size",
+        "max_epochs",
+        "patience",
+        "min_delta",
+        "sensor_hidden_size",
+        "evidence_hidden_size",
+        "evidence_embed_size",
+        "gate_hidden_size",
+        "dropout",
+        "gate_l1",
+        "encoder",
+    }
+    missing = sorted(required.difference(values))
+    if missing:
+        raise KeyError(f"Arm 2 configuration lacks required settings: {missing}")
+    return HourlyReasonCodeRgfnConfig(
+        seed=int(seed),
+        learning_rate=float(values["learning_rate"]),
+        weight_decay=float(values["weight_decay"]),
+        batch_size=int(values["batch_size"]),
+        max_epochs=int(values["max_epochs"]),
+        patience=int(values["patience"]),
+        min_delta=float(values["min_delta"]),
+        sensor_hidden_size=int(values["sensor_hidden_size"]),
+        evidence_hidden_size=int(values["evidence_hidden_size"]),
+        evidence_embed_size=int(values["evidence_embed_size"]),
+        gate_hidden_size=int(values["gate_hidden_size"]),
+        dropout=float(values["dropout"]),
+        gate_l1=float(values["gate_l1"]),
+        encoder=str(values["encoder"]),
+        mask_mode=MASK_MODE_PER_HOUR,
+    )
+
+
+def _reason_code_targets(
+    examples: dict[str, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, int]:
+    required = {
+        "y_mechanism",
+        "y_component",
+        "mechanism_label_names",
+        "component_label_names",
+    }
+    missing = sorted(required.difference(examples))
+    if missing:
+        raise KeyError(f"reason-code RGFN examples lack fields: {missing}")
+    mechanisms = np.asarray(examples["y_mechanism"], dtype=np.int64)
+    components = np.asarray(examples["y_component"], dtype=np.int64)
+    mechanism_names = np.asarray(examples["mechanism_label_names"], dtype=object).astype(str)
+    component_names = np.asarray(examples["component_label_names"], dtype=object).astype(str)
+    if mechanisms.ndim != 2 or components.ndim != 2 or len(mechanisms) != len(components):
+        raise ValueError("reason-code RGFN target arrays have incompatible shapes")
+    if mechanisms.shape[1] != len(mechanism_names) or components.shape[1] != len(component_names):
+        raise ValueError("reason-code RGFN target names do not match target widths")
+    targets = np.concatenate((mechanisms, components), axis=1)
+    if not np.isin(targets, [0, 1]).all():
+        raise ValueError("reason-code RGFN targets must be binary")
+    return targets.astype(np.float32), np.concatenate((mechanism_names, component_names)), int(len(mechanism_names))
+
+
+def _reason_code_rgfn_loss(
+    output: dict[str, torch.Tensor],
+    labels: torch.Tensor,
+    mechanism_count: int,
+    mechanism_criterion: nn.Module,
+    component_criterion: nn.Module,
+    gate_l1: float,
+) -> torch.Tensor:
+    if labels.ndim != 2:
+        raise ValueError("reason-code RGFN labels must be two-dimensional")
+    mechanism_loss = mechanism_criterion(
+        output["mechanism_logits"],
+        labels[:, :mechanism_count],
+    )
+    component_loss = component_criterion(
+        output["component_logits"],
+        labels[:, mechanism_count:],
+    )
+    value = 0.5 * (mechanism_loss + component_loss)
+    if float(gate_l1) > 0.0:
+        value = value + float(gate_l1) * torch.mean(torch.abs(output["alpha"]))
+    return value
+
+
+def _reason_code_rgfn_validation_loss(
+    model: nn.Module,
+    partition: TensorPartition,
+    mechanism_count: int,
+    mechanism_criterion: nn.Module,
+    component_criterion: nn.Module,
+    gate_l1: float,
+    batch_size: int,
+) -> float:
+    if partition.labels is None:
+        raise ValueError("reason-code RGFN validation labels are required")
+    model.eval()
+    total = 0.0
+    with torch.inference_mode():
+        for start, stop in _batch_ranges(partition.count, batch_size):
+            output = model(*[value[start:stop] for value in partition.features])
+            value = _reason_code_rgfn_loss(
+                output,
+                partition.labels[start:stop],
+                mechanism_count,
+                mechanism_criterion,
+                component_criterion,
+                gate_l1,
+            )
+            total += float(value.detach().cpu()) * (stop - start)
+    return float(total / max(partition.count, 1))
+
+
+def predict_reason_code_rgfn(
+    model: nn.Module,
+    partition: TensorPartition,
+    batch_size: int = 512,
+) -> np.ndarray:
+    model.eval()
+    values: list[np.ndarray] = []
+    with torch.inference_mode():
+        for start, stop in _batch_ranges(partition.count, batch_size):
+            output = model(*[value[start:stop] for value in partition.features])
+            values.append(
+                output["reason_code_probabilities"].detach().cpu().numpy().astype(np.float32)
+            )
+    width = int(getattr(model, "output_dim", 0))
+    return np.concatenate(values, axis=0) if values else np.empty((0, width), dtype=np.float32)
+
+
+def _reason_code_rgfn_model(
+    config: HourlyReasonCodeRgfnConfig,
+    train_partition: TensorPartition,
+    output_dim: int,
+    mechanism_count: int,
+) -> nn.Module:
+    if train_partition.labels is None:
+        raise ValueError("reason-code RGFN training labels are required")
+    architecture = HourlyRgfnConfig(
+        n_continuous=int(train_partition.features[0].shape[-1]),
+        n_static=int(train_partition.features[3].shape[-1]),
+        n_rule_evidence=int(train_partition.features[4].shape[-1]),
+        window_hours=int(train_partition.features[0].shape[1]),
+        sensor_hidden_size=int(config.sensor_hidden_size),
+        evidence_hidden_size=int(config.evidence_hidden_size),
+        evidence_embed_size=int(config.evidence_embed_size),
+        fusion_hidden_size=int(config.gate_hidden_size),
+        dropout=float(config.dropout),
+        mask_mode=str(config.mask_mode),
+    )
+    return build_hourly_rgfn(
+        str(config.encoder),
+        config=architecture,
+        output_dim=int(output_dim),
+        mechanism_count=int(mechanism_count),
+    ).to(DEVICE)
+
+
+def _reason_code_rgfn_shared_cv_plan(
+    examples: dict[str, np.ndarray],
+    targets: np.ndarray,
+    label_names: np.ndarray,
+    train_indices: np.ndarray,
+    config: HourlyReasonCodeRgfnConfig,
+) -> tuple[list[tuple[np.ndarray, np.ndarray]], dict[str, object]]:
+    if "source_episode_ids" not in examples:
+        raise KeyError("reason-code RGFN cross-validation requires source_episode_ids")
+    source_episode_ids = np.asarray(examples["source_episode_ids"], dtype=object).astype(str)
+    if source_episode_ids.shape != (len(targets),):
+        raise ValueError("reason-code RGFN source_episode_ids do not align with targets")
+    selected = np.asarray(train_indices, dtype=np.int64)
+    group_ids = reason_code_cv_group_ids(source_episode_ids)
+    train_targets = np.asarray(targets, dtype=np.int64)[selected]
+    train_groups = group_ids[selected]
+    support = train_targets.sum(axis=0).astype(np.int64)
+    positive_group_count = np.asarray(
+        [
+            len(np.unique(train_groups[train_targets[:, index] == 1]))
+            for index in range(targets.shape[1])
+        ],
+        dtype=np.int64,
+    )
+    proxy_index = min(
+        range(targets.shape[1]),
+        key=lambda index: (
+            int(positive_group_count[index]),
+            int(support[index]),
+            str(label_names[index]),
+        ),
+    )
+    folds, plan = build_reason_code_cv_folds(
+        np.asarray(targets, dtype=np.int64)[:, proxy_index],
+        selected,
+        seed=int(config.cv_seed),
+        requested_folds=5,
+        groups=group_ids,
+    )
+    return folds, {
+        **plan,
+        "cv_shared_fold_plan": True,
+        "cv_proxy_label": str(label_names[proxy_index]),
+        "cv_proxy_label_index": int(proxy_index),
+        "cv_shared_label_train_support": {
+            str(label_names[index]): int(support[index]) for index in range(targets.shape[1])
+        },
+        "cv_shared_label_positive_group_count": {
+            str(label_names[index]): int(positive_group_count[index])
+            for index in range(targets.shape[1])
+        },
+    }
+
+
+def _fit_reason_code_rgfn_cv_fold(
+    examples: dict[str, np.ndarray],
+    targets: np.ndarray,
+    fit_indices: np.ndarray,
+    oof_indices: np.ndarray,
+    config: HourlyReasonCodeRgfnConfig,
+    fold_number: int,
+    mechanism_count: int,
+    deadline: float,
+) -> tuple[np.ndarray | None, dict[str, object]]:
+    started = time.monotonic()
+    fit_indices = np.asarray(fit_indices, dtype=np.int64)
+    oof_indices = np.asarray(oof_indices, dtype=np.int64)
+    if not len(fit_indices) or not len(oof_indices):
+        raise ValueError("reason-code RGFN CV folds must have fit and OOF examples")
+    fit_targets = np.asarray(targets, dtype=np.float32)[fit_indices]
+    positive_weights = np.asarray(
+        [resolve_reason_code_class_weight(fit_targets[:, index]) for index in range(targets.shape[1])],
+        dtype=np.float32,
+    )
+    fold_config = replace(config, seed=int(config.cv_seed) + int(fold_number) - 1)
+    scaler = HourlyRgfnScaler.fit(examples, fit_indices)
+    scaled = scaler.transform(examples)
+    train_partition = _make_partition(scaled, targets, fit_indices, include_labels=True)
+    oof_partition = _make_partition(scaled, targets, oof_indices, include_labels=False)
+    if train_partition.labels is None:
+        raise RuntimeError("reason-code RGFN CV failed to prepare a labelled fit partition")
+    set_hourly_rgfn_seed(int(fold_config.seed))
+    model = _reason_code_rgfn_model(
+        fold_config,
+        train_partition,
+        targets.shape[1],
+        mechanism_count,
+    )
+    if time.monotonic() >= deadline:
+        del model
+        if DEVICE.type == "cuda":
+            torch.cuda.empty_cache()
+        return None, {
+            "fold": int(fold_number),
+            "status": "timebox_exceeded",
+            "elapsed_seconds": float(time.monotonic() - started),
+            "epochs_completed": 0,
+        }
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=float(fold_config.learning_rate),
+        weight_decay=float(fold_config.weight_decay),
+    )
+    mechanism_weight = torch.as_tensor(
+        positive_weights[:mechanism_count],
+        dtype=torch.float32,
+        device=DEVICE,
+    )
+    component_weight = torch.as_tensor(
+        positive_weights[mechanism_count:],
+        dtype=torch.float32,
+        device=DEVICE,
+    )
+    mechanism_criterion = nn.BCEWithLogitsLoss(pos_weight=mechanism_weight)
+    component_criterion = nn.BCEWithLogitsLoss(pos_weight=component_weight)
+    generator = torch.Generator(device=DEVICE.type)
+    generator.manual_seed(int(fold_config.seed))
+    completed_epochs = 0
+    timed_out = False
+    for epoch in range(1, int(fold_config.max_epochs) + 1):
+        if time.monotonic() >= deadline:
+            timed_out = True
+            break
+        model.train()
+        permutation = torch.randperm(train_partition.count, generator=generator, device=DEVICE)
+        for start, stop in _batch_ranges(train_partition.count, int(fold_config.batch_size)):
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
+            batch_indices = permutation[start:stop]
+            features = tuple(value.index_select(0, batch_indices) for value in train_partition.features)
+            labels = train_partition.labels.index_select(0, batch_indices)
+            optimizer.zero_grad(set_to_none=True)
+            output = model(*features)
+            loss = _reason_code_rgfn_loss(
+                output,
+                labels,
+                mechanism_count,
+                mechanism_criterion,
+                component_criterion,
+                float(fold_config.gate_l1),
+            )
+            loss.backward()
+            optimizer.step()
+        if timed_out:
+            break
+        completed_epochs = int(epoch)
+    elapsed = float(time.monotonic() - started)
+    if timed_out or time.monotonic() >= deadline:
+        del model
+        if DEVICE.type == "cuda":
+            torch.cuda.empty_cache()
+        return None, {
+            "fold": int(fold_number),
+            "status": "timebox_exceeded",
+            "elapsed_seconds": elapsed,
+            "epochs_completed": int(completed_epochs),
+        }
+    probabilities = predict_reason_code_rgfn(
+        model,
+        oof_partition,
+        max(int(fold_config.batch_size), 512),
+    )
+    if probabilities.shape != (len(oof_indices), targets.shape[1]):
+        raise RuntimeError("reason-code RGFN CV OOF probabilities have an unexpected shape")
+    detail = {
+        "fold": int(fold_number),
+        "status": "completed",
+        "elapsed_seconds": elapsed,
+        "epochs_completed": int(completed_epochs),
+        "fold_seed": int(fold_config.seed),
+        "fit_support": fit_targets.sum(axis=0).astype(np.int64).tolist(),
+        "oof_support": np.asarray(targets, dtype=np.int64)[oof_indices].sum(axis=0).astype(np.int64).tolist(),
+        "positive_class_weights": positive_weights.tolist(),
+        "outer_validation_used": False,
+        "fixed_epoch_training": True,
+    }
+    del model
+    if DEVICE.type == "cuda":
+        torch.cuda.empty_cache()
+    return probabilities, detail
+
+
+def _reason_code_rgfn_oof_thresholds(
+    examples: dict[str, np.ndarray],
+    targets: np.ndarray,
+    label_names: np.ndarray,
+    mechanism_count: int,
+    train_indices: np.ndarray,
+    config: HourlyReasonCodeRgfnConfig,
+    deadline: float,
+) -> tuple[np.ndarray | None, list[dict[str, object]], dict[str, object]]:
+    started = time.monotonic()
+    selected = np.asarray(train_indices, dtype=np.int64)
+    folds, plan = _reason_code_rgfn_shared_cv_plan(
+        examples,
+        targets,
+        label_names,
+        selected,
+        config,
+    )
+    if not folds:
+        return None, [], {
+            "status": "cv_not_possible",
+            "elapsed_seconds": float(time.monotonic() - started),
+            "cv_plan": plan,
+        }
+    local_position = {int(index): position for position, index in enumerate(selected.tolist())}
+    oof_probabilities = np.full((len(selected), targets.shape[1]), np.nan, dtype=np.float32)
+    oof_fold_ids = np.full(len(selected), -1, dtype=np.int64)
+    fold_details = [dict(value) for value in plan["cv_fold_details"]]
+    for fold_number, (fit_indices, oof_indices) in enumerate(folds, start=1):
+        probabilities, detail = _fit_reason_code_rgfn_cv_fold(
+            examples,
+            targets,
+            fit_indices,
+            oof_indices,
+            config,
+            fold_number,
+            mechanism_count,
+            deadline,
+        )
+        fold_details[fold_number - 1]["training"] = detail
+        if probabilities is None:
+            return None, [], {
+                "status": "timebox_exceeded",
+                "elapsed_seconds": float(time.monotonic() - started),
+                "cv_plan": {**plan, "cv_fold_details": fold_details},
+            }
+        positions = np.asarray([local_position[int(index)] for index in oof_indices], dtype=np.int64)
+        if np.isfinite(oof_probabilities[positions]).any():
+            raise RuntimeError("reason-code RGFN CV generated duplicate OOF probabilities")
+        oof_probabilities[positions] = probabilities
+        oof_fold_ids[positions] = int(fold_number)
+    if not np.isfinite(oof_probabilities).all() or np.any(oof_fold_ids < 0):
+        raise RuntimeError("reason-code RGFN CV did not cover all outer-training examples exactly once")
+    selected_targets = np.asarray(targets, dtype=np.int64)[selected]
+    thresholds = np.full(targets.shape[1], 0.5, dtype=np.float32)
+    records: list[dict[str, object]] = []
+    for axis, start, stop in (
+        ("mechanism", 0, mechanism_count),
+        ("component", mechanism_count, targets.shape[1]),
+    ):
+        for index in range(start, stop):
+            valid_folds = []
+            for fold_number, (fit_indices, oof_indices) in enumerate(folds, start=1):
+                fit_target = np.asarray(targets, dtype=np.int64)[fit_indices, index]
+                oof_target = np.asarray(targets, dtype=np.int64)[oof_indices, index]
+                if (
+                    np.equal(fit_target, 1).any()
+                    and np.equal(fit_target, 0).any()
+                    and np.equal(oof_target, 1).any()
+                    and np.equal(oof_target, 0).any()
+                ):
+                    valid_folds.append(int(fold_number))
+            selection_mask = np.isin(oof_fold_ids, np.asarray(valid_folds, dtype=np.int64))
+            if len(valid_folds) >= 2:
+                threshold, oof_metrics, candidate_count = select_reason_code_threshold_mean_fold_f1(
+                    selected_targets[selection_mask, index],
+                    oof_probabilities[selection_mask, index],
+                    oof_fold_ids[selection_mask],
+                )
+                selection_source = "training_oof_cross_validation"
+                threshold_policy = "training_oof_cv_mean_f1"
+                cross_validation_possible = True
+            else:
+                threshold = 0.5
+                oof_metrics = None
+                candidate_count = 0
+                selection_source = "predeclared_fixed_0_5"
+                threshold_policy = "predeclared_fixed_0_5"
+                cross_validation_possible = False
+            thresholds[index] = float(threshold)
+            records.append(
+                {
+                    "method": "rgfn",
+                    "axis": axis,
+                    "label": str(label_names[index]),
+                    "label_index": int(index),
+                    "selection_source": selection_source,
+                    "threshold_policy": threshold_policy,
+                    "selected_threshold": float(threshold),
+                    "oof_candidate_count": int(candidate_count),
+                    "oof_selection_metrics": oof_metrics,
+                    "cv_requested_folds": int(plan["cv_requested_folds"]),
+                    "cv_effective_folds": int(len(valid_folds)),
+                    "cv_status": str(plan["cv_status"]),
+                    "cv_grouping": str(plan["cv_grouping"]),
+                    "cv_seed": int(plan["cv_seed"]),
+                    "cv_positive_group_count": int(
+                        plan["cv_shared_label_positive_group_count"][str(label_names[index])]
+                    ),
+                    "cv_shared_plan_effective_folds": int(plan["cv_effective_folds"]),
+                    "cv_possible": bool(cross_validation_possible),
+                    "cv_valid_fold_numbers": valid_folds,
+                    "test_metrics_read_during_selection": False,
+                }
+            )
+    return thresholds, records, {
+        "status": "completed",
+        "elapsed_seconds": float(time.monotonic() - started),
+        "cv_plan": {**plan, "cv_fold_details": fold_details},
+        "oof_coverage_complete": True,
+    }
+
+
+def _fit_reason_code_rgfn_split(
+    examples: dict[str, np.ndarray],
+    splits: dict[str, np.ndarray],
+    split_scheme: str,
+    config: HourlyReasonCodeRgfnConfig,
+    deadline: float,
+) -> tuple[FittedReasonCodeRgfn | None, dict[str, object]]:
+    split_started = time.monotonic()
+    required = {"train", "validation", "test"}
+    if set(splits) != required:
+        raise ValueError("reason-code RGFN requires train, validation, and test partitions")
+    if int(config.batch_size) < 1 or int(config.max_epochs) < 1 or int(config.patience) < 1:
+        raise ValueError("reason-code RGFN training values must be positive")
+    targets, label_names, mechanism_count = _reason_code_targets(examples)
+    train_indices = np.asarray(splits["train"], dtype=np.int64)
+    validation_indices = np.asarray(splits["validation"], dtype=np.int64)
+    if len(train_indices) == 0 or len(validation_indices) == 0:
+        raise ValueError("reason-code RGFN train and validation partitions must be non-empty")
+    thresholds, cv_records, cv_status = _reason_code_rgfn_oof_thresholds(
+        examples,
+        targets,
+        label_names,
+        mechanism_count,
+        train_indices,
+        config,
+        deadline,
+    )
+    if thresholds is None:
+        return None, {
+            "split_scheme": split_scheme,
+            "status": str(cv_status["status"]),
+            "elapsed_seconds": float(time.monotonic() - split_started),
+            "epochs_completed": 0,
+            "best_epoch": 0,
+            "best_validation_loss": None,
+            "test_evaluated": False,
+            "threshold_selection": cv_status,
+        }
+    train_targets = targets[train_indices]
+    validation_targets = targets[validation_indices]
+    positive_weights = np.asarray(
+        [resolve_reason_code_class_weight(train_targets[:, index]) for index in range(targets.shape[1])],
+        dtype=np.float32,
+    )
+    scaler = HourlyRgfnScaler.fit(examples, train_indices)
+    scaled = scaler.transform(examples)
+    train_partition = _make_partition(scaled, targets, train_indices, include_labels=True)
+    validation_partition = _make_partition(scaled, targets, validation_indices, include_labels=True)
+    if train_partition.labels is None or validation_partition.labels is None:
+        raise RuntimeError("reason-code RGFN failed to prepare labelled partitions")
+    set_hourly_rgfn_seed(int(config.seed))
+    model = _reason_code_rgfn_model(
+        config,
+        train_partition,
+        targets.shape[1],
+        mechanism_count,
+    )
+    if time.monotonic() >= deadline:
+        del model
+        if DEVICE.type == "cuda":
+            torch.cuda.empty_cache()
+        return None, {
+            "split_scheme": split_scheme,
+            "status": "timebox_exceeded",
+            "elapsed_seconds": float(time.monotonic() - split_started),
+            "epochs_completed": 0,
+            "best_epoch": 0,
+            "best_validation_loss": None,
+            "test_evaluated": False,
+            "threshold_selection": cv_status,
+        }
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=float(config.learning_rate),
+        weight_decay=float(config.weight_decay),
+    )
+    mechanism_weight = torch.as_tensor(
+        positive_weights[:mechanism_count],
+        dtype=torch.float32,
+        device=DEVICE,
+    )
+    component_weight = torch.as_tensor(
+        positive_weights[mechanism_count:],
+        dtype=torch.float32,
+        device=DEVICE,
+    )
+    mechanism_criterion = nn.BCEWithLogitsLoss(pos_weight=mechanism_weight)
+    component_criterion = nn.BCEWithLogitsLoss(pos_weight=component_weight)
+    generator = torch.Generator(device=DEVICE.type)
+    generator.manual_seed(int(config.seed))
+    best_state = _copy_state(model)
+    best_loss = float("inf")
+    best_epoch = 0
+    completed_epochs = 0
+    stale = 0
+    timed_out = False
+    for epoch in range(1, int(config.max_epochs) + 1):
+        if time.monotonic() >= deadline:
+            timed_out = True
+            break
+        model.train()
+        permutation = torch.randperm(train_partition.count, generator=generator, device=DEVICE)
+        for start, stop in _batch_ranges(train_partition.count, int(config.batch_size)):
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
+            batch_indices = permutation[start:stop]
+            features = tuple(value.index_select(0, batch_indices) for value in train_partition.features)
+            labels = train_partition.labels.index_select(0, batch_indices)
+            optimizer.zero_grad(set_to_none=True)
+            output = model(*features)
+            loss = _reason_code_rgfn_loss(
+                output,
+                labels,
+                mechanism_count,
+                mechanism_criterion,
+                component_criterion,
+                float(config.gate_l1),
+            )
+            loss.backward()
+            optimizer.step()
+        if timed_out:
+            break
+        validation_loss = _reason_code_rgfn_validation_loss(
+            model,
+            validation_partition,
+            mechanism_count,
+            mechanism_criterion,
+            component_criterion,
+            float(config.gate_l1),
+            max(int(config.batch_size), 512),
+        )
+        completed_epochs = epoch
+        if validation_loss < best_loss - float(config.min_delta):
+            best_loss = validation_loss
+            best_epoch = epoch
+            best_state = _copy_state(model)
+            stale = 0
+        else:
+            stale += 1
+        if stale >= int(config.patience):
+            break
+    elapsed = float(time.monotonic() - split_started)
+    if time.monotonic() >= deadline:
+        timed_out = True
+    if timed_out:
+        del model
+        if DEVICE.type == "cuda":
+            torch.cuda.empty_cache()
+        return None, {
+            "split_scheme": split_scheme,
+            "status": "timebox_exceeded",
+            "elapsed_seconds": elapsed,
+            "epochs_completed": int(completed_epochs),
+            "best_epoch": int(best_epoch),
+            "best_validation_loss": None if not np.isfinite(best_loss) else float(best_loss),
+            "test_evaluated": False,
+            "threshold_selection": cv_status,
+        }
+    model.load_state_dict(best_state)
+    validation_probabilities = predict_reason_code_rgfn(
+        model,
+        validation_partition,
+        max(int(config.batch_size), 512),
+    )
+    validation_metrics: list[dict[str, object]] = []
+    selection_trace: list[dict[str, object]] = []
+    if len(cv_records) != targets.shape[1]:
+        raise RuntimeError("reason-code RGFN cross-validation did not produce one threshold per label")
+    for record in cv_records:
+        index = int(record["label_index"])
+        threshold = float(thresholds[index])
+        metrics = reason_code_metrics(
+            validation_targets[:, index],
+            validation_probabilities[:, index],
+            threshold,
+        )
+        reference_threshold, reference_metrics, reference_candidate_count = select_reason_code_threshold(
+            validation_targets[:, index],
+            validation_probabilities[:, index],
+        )
+        validation_metrics.append(
+            {
+                "axis": str(record["axis"]),
+                "label": str(record["label"]),
+                **metrics,
+            }
+        )
+        selection_trace.append(
+            {
+                **record,
+                "split_scheme": split_scheme,
+                "train_support": int(train_targets[:, index].sum()),
+                "validation_support": int(validation_targets[:, index].sum()),
+                "positive_class_weight": float(positive_weights[index]),
+                "validation_metrics": metrics,
+                "single_validation_reference_threshold": float(reference_threshold),
+                "single_validation_reference_metrics": reference_metrics,
+                "single_validation_reference_candidate_count": int(reference_candidate_count),
+                "single_validation_reference_is_diagnostic_only": True,
+                "outer_validation_used_for_threshold_selection": False,
+                "test_metrics_read_during_selection": False,
+            }
+        )
+    training = {
+        "status": "completed",
+        "elapsed_seconds": elapsed,
+        "epochs_completed": int(completed_epochs),
+        "best_epoch": int(best_epoch),
+        "best_validation_loss": float(best_loss),
+        "parameter_count": int(sum(parameter.numel() for parameter in model.parameters())),
+        "loss": "0.5 * mechanism_BCE + 0.5 * component_BCE + optional_gate_l1",
+        "threshold_selection": cv_status,
+        "outer_validation_used_for_early_stopping": True,
+        "outer_validation_used_for_threshold_selection": False,
+        "test_evaluated": False,
+    }
+    return FittedReasonCodeRgfn(
+        split_scheme=split_scheme,
+        model=model,
+        scaler=scaler,
+        config=config,
+        mechanism_count=mechanism_count,
+        label_names=label_names,
+        thresholds=thresholds,
+        positive_class_weights=positive_weights,
+        train_support=train_targets.sum(axis=0).astype(np.int64),
+        validation_support=validation_targets.sum(axis=0).astype(np.int64),
+        validation_metrics=validation_metrics,
+        selection_trace=selection_trace,
+        training=training,
+    ), training
+
+
+def fit_reason_code_rgfn_models(
+    examples: dict[str, np.ndarray],
+    splits: dict[str, dict[str, np.ndarray]],
+    configs: Mapping[str, HourlyReasonCodeRgfnConfig],
+    timebox_seconds: float = 45.0 * 60.0,
+    cv_seed: int | None = None,
+) -> tuple[dict[str, FittedReasonCodeRgfn], list[dict[str, object]], dict[str, dict[str, object]]]:
+    if float(timebox_seconds) <= 0.0:
+        raise ValueError("reason-code RGFN timebox must be positive")
+    started = time.monotonic()
+    deadline = started + float(timebox_seconds)
+    fitted: dict[str, FittedReasonCodeRgfn] = {}
+    trace: list[dict[str, object]] = []
+    status: dict[str, dict[str, object]] = {}
+    for scheme in ("random", "spaced"):
+        if scheme not in splits:
+            raise KeyError(f"reason-code RGFN splits lack {scheme}")
+        if scheme not in configs:
+            raise KeyError(f"reason-code RGFN configurations lack {scheme}")
+        if time.monotonic() >= deadline:
+            status[scheme] = {
+                "split_scheme": scheme,
+                "status": "timebox_exceeded",
+                "elapsed_seconds": float(time.monotonic() - started),
+                "epochs_completed": 0,
+                "best_epoch": 0,
+                "best_validation_loss": None,
+                "test_evaluated": False,
+            }
+            continue
+        model, detail = _fit_reason_code_rgfn_split(
+            examples,
+            splits[scheme],
+            scheme,
+            (
+                replace(configs[scheme], cv_seed=int(cv_seed))
+                if cv_seed is not None
+                else configs[scheme]
+            ),
+            deadline,
+        )
+        status[scheme] = detail
+        if model is None:
+            continue
+        fitted[scheme] = model
+        trace.extend(model.selection_trace)
+    for scheme, detail in status.items():
+        detail["total_rgfn_elapsed_seconds"] = float(time.monotonic() - started)
+    return fitted, trace, status
+
+
+def _reason_code_rgfn_test_partition(
+    examples: dict[str, np.ndarray],
+    fitted: FittedReasonCodeRgfn,
+    indices: np.ndarray,
+) -> TensorPartition:
+    targets, _, _ = _reason_code_targets(examples)
+    values = fitted.scaler.transform(examples)
+    return _make_partition(values, targets, np.asarray(indices, dtype=np.int64), include_labels=False)
+
+
+def evaluate_reason_code_rgfn_models(
+    fitted: Mapping[str, FittedReasonCodeRgfn],
+    examples: dict[str, np.ndarray],
+    splits: dict[str, dict[str, np.ndarray]],
+) -> tuple[dict[str, dict[str, dict[str, object]]], list[dict[str, object]]]:
+    targets, label_names, mechanism_count = _reason_code_targets(examples)
+    evaluations: dict[str, dict[str, dict[str, object]]] = {}
+    rows: list[dict[str, object]] = []
+    for scheme in ("random", "spaced"):
+        if scheme not in fitted:
+            continue
+        item = fitted[scheme]
+        selection_by_label = {
+            str(record["label"]): record for record in item.selection_trace
+        }
+        test_indices = np.asarray(splits[scheme]["test"], dtype=np.int64)
+        partition = _reason_code_rgfn_test_partition(examples, item, test_indices)
+        probabilities = predict_reason_code_rgfn(item.model, partition)
+        if probabilities.shape != (len(test_indices), len(label_names)):
+            raise RuntimeError("reason-code RGFN probabilities do not match the test target shape")
+        evaluations[scheme] = {}
+        for axis, start, stop in (
+            ("mechanism", 0, mechanism_count),
+            ("component", mechanism_count, len(label_names)),
+        ):
+            names = label_names[start:stop]
+            summary = reason_code_axis_summary(
+                targets[test_indices, start:stop],
+                probabilities[:, start:stop],
+                item.thresholds[start:stop],
+                names,
+            )
+            for local_index, metric in enumerate(summary["per_label"]):
+                index = start + local_index
+                selection = selection_by_label[str(label_names[index])]
+                rows.append(
+                    {
+                        "method": "rgfn",
+                        "split_scheme": scheme,
+                        "axis": axis,
+                        "label": str(label_names[index]),
+                        "threshold": float(item.thresholds[index]),
+                        "threshold_source": str(selection["selection_source"]),
+                        "threshold_policy": str(selection["threshold_policy"]),
+                        "cv_effective_folds": int(selection["cv_effective_folds"]),
+                        "train_support": int(item.train_support[index]),
+                        "validation_support": int(item.validation_support[index]),
+                        **metric,
+                    }
+                )
+            evaluations[scheme][axis] = {
+                "test_indices": test_indices,
+                "thresholds": item.thresholds[start:stop].copy(),
+                "probabilities": probabilities[:, start:stop],
+                "truth": targets[test_indices, start:stop].astype(np.int64),
+                **summary,
+            }
+        item.training["test_evaluated"] = True
+    return evaluations, rows
+
+
+def save_reason_code_rgfn_model(
+    fitted: FittedReasonCodeRgfn,
+    path: Path,
+    manifest_path: Path,
+    arm2_source_configuration: Mapping[str, object],
+) -> Path:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "mode": "reason_codes",
+            "method": "rgfn",
+            "split_scheme": fitted.split_scheme,
+            "encoder": str(fitted.config.encoder),
+            "state_dict": _copy_state(fitted.model),
+            "scaler": fitted.scaler.payload(),
+            "configuration": asdict(fitted.config),
+            "arm2_source_configuration": dict(arm2_source_configuration),
+            "historical_binary_fault_class_weight_not_used": arm2_source_configuration.get("fault_class_weight"),
+            "mask_mode": str(fitted.config.mask_mode),
+            "window_hours": int(fitted.model.window_hours),
+            "n_continuous": int(fitted.model.n_continuous),
+            "n_static": int(fitted.model.n_static),
+            "n_rule_evidence": int(fitted.model.n_rule_evidence),
+            "mechanism_count": int(fitted.mechanism_count),
+            "label_names": fitted.label_names.tolist(),
+            "selected_thresholds": fitted.thresholds.tolist(),
+            "positive_class_weights": fitted.positive_class_weights.tolist(),
+            "selection_trace": fitted.selection_trace,
+            "training": fitted.training,
+            "manifest_path": str(manifest_path),
+            "parameter_count": int(sum(parameter.numel() for parameter in fitted.model.parameters())),
+        },
+        destination,
+    )
+    return destination
 
 
 def prepare_hourly_rgfn_split(

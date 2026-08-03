@@ -1,0 +1,53 @@
+Availability classification report
+
+This is a rule-derived availability monitor. Partial outages have no independent ground truth, so no precision, recall, F1, or model-validation metrics are reported.
+
+Frozen legacy full-outage series
+events: 2,398
+hours: 34,406
+mean_duration_hours: 14.35
+median_duration_hours: 4.00
+max_duration_hours: 814
+
+Sensor-group channel mapping
+anemometer: windspeed_avg_kmh, windspeed_high_kmh, windspeed_low_kmh, windgust_avg_kmh, windgust_high_kmh, windgust_low_kmh
+barometer: pressure_max_hpa, pressure_min_hpa, pressure_trend_hpa
+light_uv: solar_radiation_high_wm2, uv_high
+rain_gauge: precip_rate_mmh, precip_total_mm
+thermo_hygrometer: humidity_avg_pct, humidity_high_pct, humidity_low_pct, temp_avg_c, temp_high_c, temp_low_c
+wind_vane: winddir_avg_deg
+
+Classification accounting
+observed_station_hour_rows: 166,017
+materialized_structural_gap_hours: 1,454
+terminal_or_other_excluded_rows: 959
+in_scope_rows: 166,512
+in_scope_full_outage: 35,860
+in_scope_partial_outage: 11,158
+in_scope_online: 119,494
+
+Structural station-time gaps
+gap_count_over_one_hour: 4
+omitted_station_hours: 1,454
+The omitted hours are materialized as full_outage only in the operational classification table. The frozen legacy full-outage event table and its duration statistics are intentionally unchanged.
+
+Partial-outage event duration statistics
+events: 803
+hours: 11,158
+mean_duration_hours: 13.90
+median_duration_hours: 14.00
+max_duration_hours: 465
+duration_buckets:
+short        139
+medium       630
+long          33
+very_long      1
+
+Sensor-group availability among transmitting hours
+     sensor_group  transmitting_hours  present_hours  absent_hours  availability_pct
+       anemometer              130652         120728          9924         92.404249
+        barometer              130652         130452           200         99.846922
+         light_uv              130652         119601         11051         91.541653
+       rain_gauge              130652         128390          2262         98.268683
+thermo_hygrometer              130652         120728          9924         92.404249
+        wind_vane              130652         120728          9924         92.404249

@@ -79,6 +79,38 @@ def test_hourly_rgfn_variants_return_valid_gated_probabilities() -> None:
     assert parameter_counts[0] != parameter_counts[1]
 
 
+def test_hourly_rgfn_reason_code_outputs_keep_independent_mechanism_and_component_heads() -> None:
+    torch.manual_seed(11)
+    count = 3
+    x_cont = torch.randn(count, 7, len(CONTINUOUS_FEATURES))
+    mask = torch.ones(count, 7, 1)
+    time_since_last = torch.zeros(count, 7, 1)
+    static = torch.randn(count, len(STATIC_FEATURES))
+    rule_evidence = torch.randn(count, len(rule_evidence_feature_names()))
+    binary = build_hourly_rgfn(ENCODER_GRU)
+    model = build_hourly_rgfn(
+        ENCODER_GRU,
+        output_dim=10,
+        mechanism_count=4,
+    )
+
+    model.eval()
+    with torch.no_grad():
+        output = model(x_cont, mask, time_since_last, static, rule_evidence)
+
+    expected = output["alpha"] * output["temporal_logits"] + (1.0 - output["alpha"]) * output["rule_logits"]
+    assert output["reason_code_logits"].shape == (count, 10)
+    assert output["reason_code_probabilities"].shape == (count, 10)
+    assert output["mechanism_logits"].shape == (count, 4)
+    assert output["component_logits"].shape == (count, 6)
+    assert output["mechanism_probabilities"].shape == (count, 4)
+    assert output["component_probabilities"].shape == (count, 6)
+    assert torch.all((output["alpha"] >= 0.0) & (output["alpha"] <= 1.0))
+    assert torch.allclose(output["reason_code_logits"], expected)
+    assert torch.allclose(output["reason_code_probabilities"], torch.sigmoid(expected))
+    assert model.parameter_count() > binary.parameter_count()
+
+
 @pytest.mark.parametrize(
     ("encoder", "mask_mode", "input_width", "parameter_count"),
     [

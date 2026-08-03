@@ -9,10 +9,13 @@ without reconstructing its private source-acquisition history.
 The project monitors a 26-station personal weather-station network. Its
 deployed modelling unit is a **station-hour**. The main fault-detection route
 uses rule and reference evidence to label episodes, expands those labels into
-past-only hourly windows, and trains binary fault/not-fault models. A separate
-reliability prototype evaluates future station outages at 6, 12, and 24 hours.
+past-only hourly windows, trains binary fault/not-fault models, and evaluates
+retrospective event-level mechanism reason codes. The reliability route adds
+full/partial outage classification, a causal current-health score, five
+health-forecast horizons for transmitting stations, and a combined operational
+scorecard. Corrected incident-risk experiments are retained as future work.
 
-There are eight public front doors in `scripts/`. The public workflow begins
+There are nine public front doors in `scripts/`. The public workflow begins
 with the published canonical data file, not raw-source acquisition:
 
 ```text
@@ -21,8 +24,10 @@ data/merged/station_hourly_merged.csv
   -> detection features
   -> episode labels
   -> hourly tensors
-  -> baseline / RGFN training and tuning
-  -> outage-risk evaluation and report figures
+  -> baseline / RGFN training, tuning, and retrospective reason codes
+  -> full/partial availability evidence
+  -> current health -> five-horizon health forecast -> station scorecard
+  -> incident-risk experiments and report figures
 ```
 
 ### Scope boundary
@@ -38,6 +43,11 @@ front door. Generated feature matrices, tensors, model checkpoints, and some
 historical figure inputs are intentionally not versioned. A bare clone can
 inspect the data, labels, code, and published evidence, but cannot reproduce
 every historical model run without those inputs.
+
+Health-forecast evaluation files and model bundles are generated locally and
+ignored. The tracked operational scorecard is published evidence; regenerating
+it requires first running the health forecast so the five selected
+transmitting-origin model bundles exist.
 
 ## Pipeline
 
@@ -141,7 +151,7 @@ predefined configurations are reported; held-out test metrics do not select or
 name a winner.
 
 **Front door.** `scripts/train_hourly_detection.py` with `baseline`,
-`split-comparison`, `calibration`, or `rgfn`.
+`split-comparison`, `calibration`, `rgfn`, or `reason-codes`.
 
 **Main code.** `src/workflows/train_hourly_baseline.py`,
 `train_hourly_split_comparison.py`, `train_hourly_calibration.py`, and
@@ -152,7 +162,8 @@ name a winner.
 **Inputs/outputs.** Reads generated tensors and writes ignored split manifests,
 metrics, reports, feature importance, and model/checkpoint bundles. The
 required order is baseline, calibration, then RGFN; the split-comparison run
-is independent experiment evidence.
+is independent experiment evidence. Reason-code outputs are retrospective
+event-level mechanism analyses; they are not causal live-dashboard diagnoses.
 
 **Tests.** `tests/test_hourly_baseline.py`,
 `tests/test_hourly_calibration.py`, `tests/test_rgfn_hourly.py`, and
@@ -183,25 +194,67 @@ data, and the generated feature matrix. Resume additionally requires saved
 tuning checkpoints. Missing prerequisites are reported together before any
 tuning output is created.
 
-### 7. Outage-risk evaluation
+### 7. Full and partial availability
 
-**Purpose.** Prototype an independent reliability problem: whether a station
-will experience a future outage at 6, 12, or 24 hours.
+**Purpose.** Preserve the frozen full-outage definition while additionally
+classifying transmitting station-hours with one or more entirely absent sensor
+groups as partial outages. Structural gaps are materialised as full outages for
+continuous-clock analysis.
+
+**Main code.** `src/availability/build_availability_events.py` and
+`build_station_reliability_summary.py`.
+
+**Inputs/outputs.** Reads the published row-state and measurement evidence. The
+tracked outputs are `hourly_availability_classification.parquet`,
+`partial_outage_events.parquet`, `structural_availability_gaps.csv`,
+`availability_report.txt`, and the station reliability summary. The original
+2,398 full-outage events and 47 network-wide windows remain unchanged.
+
+**Tests.** `tests/test_availability.py`.
+
+### 8. Station health, forecast, and operational scorecard
+
+**Purpose.** Build a causal 0-100 current-health score, evaluate health at
+1/3/6/12/24-hour horizons for transmitting stations, and assemble one current
+operational row for each of the 26 stations.
+
+**Front door.** `scripts/build_station_health.py`. The default builds current
+health, `--forecast` trains/evaluates the five horizons, and `--scorecard`
+assembles a parameterised station snapshot without retraining.
+
+**Main code.** `src/availability/health_score.py`, `health_forecast.py`, and
+`operational_scorecard.py`.
+
+**Inputs/outputs.** Current health reads the canonical station-hour data and
+the public exact-hour reference cache. Forecast evaluation/model artifacts are
+generated below ignored `data/eval/health_forecast/` and
+`data/model/health_forecast/`. The tracked score, summary, causal audits,
+figures, scorecard, report, and invariants preserve the completed result.
+Regenerating the scorecard requires the five selected models produced by
+`--forecast`.
+
+**Tests.** `tests/test_availability.py` and
+`tests/test_front_door_scripts.py`.
+
+### 9. Incident-risk experiments
+
+**Purpose.** Construct future fault/outage targets on a continuous hourly grid
+and evaluate direct and discrete-hazard comparisons at 6, 12, and 24 hours.
 
 **Front door.** `scripts/evaluate_outage_risk.py`
 
 **Main code.** `src/availability/risk_dataset.py`, `risk_model.py`,
 `risk_eval.py`, and shared `src/model/binary_metrics.py`.
 
-**Inputs/outputs.** Reads `data/processed/hourly_row_states.parquet` and
-availability events. Writes preliminary outage-risk hour metrics, event
-metrics, and predictions under `data/eval/`. The current row-offset labels and
-unpurged split mean these artifacts are not final forecasting claims.
+**Inputs/outputs.** Labels are defined strictly over `(t, t+H]`; partitions are
+chronological by timestamp and independently purged by horizon. Saved
+comparison artifacts are research evidence and future work, not deployed
+forecasting claims, because the acceptance criterion was not met.
 
 **Tests.** `tests/test_outage_risk.py`, `tests/test_availability.py`, and
 `tests/test_binary_metrics.py`.
 
-### 8. Report assets
+### 10. Report assets
 
 **Purpose.** Produce methodology and results figures for the project report.
 
@@ -228,14 +281,17 @@ Package markers are omitted below unless they contain runtime code.
 
 | Module | Role |
 |---|---|
-| `build_availability_events.py` | Converts contiguous true-outage candidate hours into station-level availability events. |
+| `build_availability_events.py` | Builds frozen full-outage events plus operational full/partial station-hour classes, partial events, and structural-gap evidence. |
 | `build_network_outage_windows.py` | Groups concurrent station outages into network windows and classifies them. |
-| `build_station_reliability_summary.py` | Generates a station reliability summary. |
+| `build_station_reliability_summary.py` | Generates per-station full/partial outage and sensor-group availability summaries. |
+| `health_score.py` | Builds the causal, transparent 0-100 station-health score, progressive outage penalty, audits, reports, and figures. |
+| `health_forecast.py` | Builds chronological five-horizon health datasets, baselines, learned comparisons, validation selection, tests, and saved inference wrappers. |
+| `operational_scorecard.py` | Joins current health, forecasts, availability, detector evidence, and reliability history into one causal station snapshot. |
 | `plot_network_offline_fraction_timeline.py` | Historical availability timeline plotting utility. |
 | `plot_station_uptime_bar.py` | Historical station-uptime plotting utility. |
-| `risk_dataset.py` | Builds past-observed future-outage features and provisional row-offset labels. |
-| `risk_eval.py` | Creates prototype chronological splits and outage threshold/event/lead-time metrics; the current split is not horizon-purged. |
-| `risk_model.py` | Defines baseline, logistic, and boosted-tree outage-risk models. |
+| `risk_dataset.py` | Builds continuous-clock fault/outage targets, causal evidence features, event-history fields, and per-horizon purged partitions. |
+| `risk_eval.py` | Provides timestamp splits, metrics, evaluation reports, and shared regression helpers used by health forecasting. |
+| `risk_model.py` | Defines direct and discrete-hazard risk comparisons and validation-only operating-point selection. |
 
 ### `src/config/`
 
@@ -258,11 +314,11 @@ Package markers are omitted below unless they contain runtime code.
 |---|---|
 | `binary_metrics.py` | Shared binary precision, recall, F1, confusion metrics, and maximum-F1 threshold selection. |
 | `feature_spec.py` | Feature vocabulary and fault mechanism/component axes. |
-| `hourly_baseline.py` | Tensor loading, random/spaced splits, and the class-weighted gradient-boosted baseline. |
+| `hourly_baseline.py` | Tensor loading, random/spaced splits, class-weighted detection, and retrospective multi-label reason-code comparison helpers. |
 | `hourly_calibration.py` | Validation-only weight/threshold selection for the baseline. |
 | `hourly_detection.py` | Core hourly labels, display states, and past-only tensor construction. |
-| `hourly_rgfn.py` | RGFN architecture: temporal encoders, rule branch, learned gate, and mask validation. |
-| `hourly_rgfn_training.py` | RGFN split preparation, scaling, training, checkpoints, and comparisons. |
+| `hourly_rgfn.py` | RGFN architecture: temporal encoders, rule branch, learned gate, mask validation, and multi-label reason-code heads. |
+| `hourly_rgfn_training.py` | RGFN split preparation, scaling, training, checkpoints, detection comparisons, and reason-code evaluation. |
 | `hourly_rgfn_tuning.py` | RGFN tuning engine and result tables. |
 | `hourly_rgfn_tuning_features.py` | Causal feature augmentations used by tuning arms. |
 | `hourly_rgfn_tuning_logistic.py` | Logistic-regression tuning comparison. |
@@ -303,7 +359,7 @@ Package markers are omitted below unless they contain runtime code.
 | `build_result_figures.py` | Results figure generation. |
 | `rebuild_detection_features.py` | Public analysis orchestration for the full feature rebuild. |
 | `resume_hourly_tuning.py` | Resume helper for persisted tuning work. |
-| `train_hourly_baseline.py` | Baseline front-door workflow. |
+| `train_hourly_baseline.py` | Baseline and retrospective reason-code front-door workflow. |
 | `train_hourly_calibration.py` | Baseline calibration workflow. |
 | `train_hourly_rgfn.py` | RGFN training workflow. |
 | `train_hourly_split_comparison.py` | Random-versus-spaced split comparison workflow. |
@@ -320,14 +376,20 @@ Package markers are omitted below unless they contain runtime code.
 | `data/processed/hourly_row_states.parquet` | Published availability evidence | Read by outage-risk evaluation and methodology figures. |
 | `data/processed/availability_events.parquet` | Published availability evidence | Read by outage-risk evaluation. |
 | `data/processed/network_outage_windows.csv` | Published availability evidence | Network-outage context. |
+| `data/processed/hourly_availability_classification.parquet` | Published operational availability evidence | Full/partial/online/excluded state for each materialised station-hour. |
+| `data/processed/partial_outage_events.parquet` | Published operational availability evidence | Consecutive partial-outage events and absent sensor groups. |
+| `data/processed/structural_availability_gaps.csv` | Published gap audit | Four omitted station spans materialised as full outages for continuous-clock calculations. |
+| `data/processed/station_health_scores.parquet` and `station_health_summary.csv` | Published current-health evidence | Causal score components, total, band, summaries, and diagnostics. |
+| `data/processed/station_operational_scorecard.csv` | Published operational snapshot | One current row per station, with health, forecast, availability, evidence, and reliability fields. |
+| `data/eval/health_forecast/` and `data/model/health_forecast/` | Ignored generated artifacts | Created by `build_station_health.py --forecast`; required to regenerate the scorecard. |
 | `data/processed/data_audit_summary.csv` and `missingness_by_variable.csv` | Published audit evidence | Dataset quality summaries. |
-| `data/eval/outage_risk_*.csv` and `outage_risk_predictions.parquet` | June-current prototype evidence | Outputs of the active outage-risk evaluator; not final forecasting claims. |
+| `data/eval/outage_risk_*.csv` and `outage_risk_predictions.parquet` | Retained historical prototype evidence | Pre-correction outputs; not final forecasting claims. The current front door rebuilds corrected labels/splits. |
 | `data/external/reference_hourly/` | Ignored generated cache | Created by public reference fetch. |
 | `data/external/five_minute_input/` | Separately supplied input | Required for exact external/stuck evidence rebuild. |
 | `data/features/feature_matrix.parquet` | Ignored generated artifact | Required to build hourly tensors. |
 | `data/hourly_detection/` tensors/models | Ignored generated artifacts | Required for training/tuning reproduction. |
 
-Dated April–June backfill snapshots and retired V1 evaluation artifacts are
+Dated April-June backfill snapshots and retired V1 evaluation artifacts are
 intentionally absent from this public snapshot. They are neither current
 inputs nor evidence for the retained model path.
 
@@ -359,6 +421,19 @@ inputs nor evidence for the retained model path.
   full historical series.
 - **RGFN / Evidence Gate:** the Reliability-Aware Gated Fusion Network combines
   temporal continuous features with rule evidence through a learned gate.
+- **Full versus partial outage:** full means no transmission at that station-hour;
+  partial means the station transmits while every channel in at least one sensor
+  group is absent. The categories are mutually exclusive.
+- **Health score:** a causal 0-100 operational summary built from transmission
+  reliability, sensor completeness, rule-evidence burden, external-reference
+  consistency, and recent stability. Active outages apply a monotonic,
+  progressive duration penalty rather than an immediate hard zero.
+- **Health forecast scope:** reported 1/3/6/12/24-hour forecasts apply to
+  transmitting origins. Full-outage origins are marked not applicable in the
+  operational scorecard.
+- **Reason codes:** retrospective multi-label mechanism verdicts aggregated at
+  reviewed event level. They are explanatory evaluation outputs, not causal
+  live-event segmentation.
 
 ## How to run the public workflow
 
@@ -380,10 +455,19 @@ python scripts/build_hourly_dataset.py
 python scripts/train_hourly_detection.py baseline
 python scripts/train_hourly_detection.py calibration
 python scripts/train_hourly_detection.py rgfn
+python scripts/train_hourly_detection.py reason-codes
 python scripts/tune_hourly_detection.py run
 
-# Preliminary prototype, not a final forecasting claim
-python scripts/evaluate_outage_risk.py
+# Current health score; requires regenerated public exact-hour reference data
+python scripts/build_station_health.py
+
+# Generates ignored evaluation files and the models needed by --scorecard
+python scripts/build_station_health.py --forecast
+python scripts/build_station_health.py --scorecard
+
+# Corrected label/split construction; model routes remain future-work evidence
+python scripts/evaluate_outage_risk.py --target outage
+python scripts/evaluate_outage_risk.py --target fault
 
 # Public-safe report figures
 python scripts/generate_report_assets.py --set methodology

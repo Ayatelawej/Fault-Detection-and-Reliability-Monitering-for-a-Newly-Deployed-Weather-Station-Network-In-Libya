@@ -13,6 +13,8 @@ FIVE_MINUTE_INPUT_DIR = Path(
 )
 LABELS_DIR = DATA_DIR / "labels"
 PROCESSED_DIR = DATA_DIR / "processed"
+EVALUATION_DIR = DATA_DIR / "eval"
+MODEL_DIR = DATA_DIR / "model"
 
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 FIGURES_DIR = OUTPUTS_DIR / "figures"
@@ -24,9 +26,76 @@ DATA_AUDIT_SUMMARY_PATH = PROCESSED_DIR / "data_audit_summary.csv"
 HOURLY_ROW_STATES_PATH = PROCESSED_DIR / "hourly_row_states.parquet"
 AVAILABILITY_EVENTS_PATH = PROCESSED_DIR / "availability_events.parquet"
 NETWORK_OUTAGE_WINDOWS_PATH = PROCESSED_DIR / "network_outage_windows.csv"
+AVAILABILITY_CLASSIFICATION_PATH = (
+    PROCESSED_DIR / "hourly_availability_classification.parquet"
+)
+PARTIAL_OUTAGE_EVENTS_PATH = PROCESSED_DIR / "partial_outage_events.parquet"
+STRUCTURAL_AVAILABILITY_GAPS_PATH = (
+    PROCESSED_DIR / "structural_availability_gaps.csv"
+)
+STATION_RELIABILITY_SUMMARY_PATH = (
+    PROCESSED_DIR / "station_reliability_summary.csv"
+)
+AVAILABILITY_REPORT_PATH = PROCESSED_DIR / "availability_report.txt"
+STATION_HEALTH_SCORES_PATH = PROCESSED_DIR / "station_health_scores.parquet"
+STATION_HEALTH_SUMMARY_PATH = PROCESSED_DIR / "station_health_summary.csv"
+STATION_HEALTH_REPORT_PATH = PROCESSED_DIR / "station_health_report.txt"
+STATION_HEALTH_INVARIANTS_PATH = PROCESSED_DIR / "station_health_invariants.json"
+STATION_HEALTH_CAUSALITY_AUDIT_PATH = (
+    PROCESSED_DIR / "station_health_delete_future_validation.csv"
+)
+STATION_HEALTH_CAUSALITY_SUMMARY_PATH = (
+    PROCESSED_DIR / "station_health_delete_future_summary.csv"
+)
+STATION_HEALTH_PROGRESSIVE_COMPARISON_PATH = (
+    PROCESSED_DIR / "station_health_progressive_comparison.csv"
+)
+STATION_HEALTH_PROGRESSIVE_RANKING_PATH = (
+    PROCESSED_DIR / "station_health_progressive_station_ranking.csv"
+)
+STATION_HEALTH_OUTAGE_DURATION_CURVE_PATH = (
+    PROCESSED_DIR / "station_health_outage_duration_curve.csv"
+)
+STATION_HEALTH_OUTAGE_TRAJECTORY_PATH = (
+    PROCESSED_DIR / "station_health_outage_trajectory.csv"
+)
+HEALTH_FORECAST_DIR = EVALUATION_DIR / "health_forecast"
+HEALTH_FORECAST_MODEL_DIR = MODEL_DIR / "health_forecast"
+STATION_OPERATIONAL_SCORECARD_PATH = (
+    PROCESSED_DIR / "station_operational_scorecard.csv"
+)
+STATION_OPERATIONAL_SCORECARD_REPORT_PATH = (
+    PROCESSED_DIR / "station_operational_scorecard_report.txt"
+)
+STATION_OPERATIONAL_SCORECARD_INVARIANTS_PATH = (
+    PROCESSED_DIR / "station_operational_scorecard_invariants.json"
+)
+STATION_OPERATIONAL_SCORECARD_CAUSALITY_PATH = (
+    PROCESSED_DIR / "station_operational_scorecard_delete_future_validation.csv"
+)
 
 STATION_COVERAGE_FIGURE_PATH = FIGURES_DIR / "station_coverage_timeline.png"
 MISSINGNESS_HEATMAP_PATH = FIGURES_DIR / "missingness_heatmap.png"
+HEALTH_DISTRIBUTION_FIGURE_PATH = FIGURES_DIR / "health_distribution.png"
+HEALTH_COMPONENT_DISTRIBUTIONS_FIGURE_PATH = (
+    FIGURES_DIR / "health_component_distributions.png"
+)
+HEALTH_STATION_TIMESERIES_FIGURE_PATH = FIGURES_DIR / "health_station_timeseries.png"
+HEALTH_COMPONENT_CORRELATION_FIGURE_PATH = (
+    FIGURES_DIR / "health_component_correlation.png"
+)
+HEALTH_OUTAGE_DURATION_TRAJECTORY_FIGURE_PATH = (
+    FIGURES_DIR / "health_outage_duration_trajectory.png"
+)
+HEALTH_FORECAST_BASELINE_COMPARISON_FIGURE_PATH = (
+    FIGURES_DIR / "health_forecast_baseline_comparison.png"
+)
+HEALTH_FORECAST_CALIBRATION_FIGURE_PATH = (
+    FIGURES_DIR / "health_forecast_level_calibration.png"
+)
+HEALTH_FORECAST_HORIZON_DEGRADATION_FIGURE_PATH = (
+    FIGURES_DIR / "health_forecast_horizon_degradation.png"
+)
 
 CANONICAL_TIMEZONE = "UTC"
 EXPECTED_FROZEN_N_ROWS = 166_017
@@ -106,6 +175,8 @@ DIRECTORIES_TO_CREATE = [
     EXTERNAL_DIR,
     LABELS_DIR,
     PROCESSED_DIR,
+    EVALUATION_DIR,
+    MODEL_DIR,
     FIGURES_DIR,
 ]
 

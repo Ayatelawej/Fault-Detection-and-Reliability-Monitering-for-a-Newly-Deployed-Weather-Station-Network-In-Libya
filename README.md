@@ -8,11 +8,15 @@ frozen through June 2026.
 The live detection unit is a **station-hour**. The system builds reproducible
 episode labels, expands them into hour-level fault/not-fault targets, trains a
 gradient-boosted baseline and a Reliability-Aware Gated Fusion Network (RGFN),
-and contains a separate 6/12/24-hour outage-risk prototype.
+and evaluates retrospective event-level mechanism reason codes. Its reliability
+path adds full/partial outage classification, a causal 0-100 station-health
+score, transmitting-station health forecasts at 1/3/6/12/24 hours, and a
+combined 26-station operational scorecard.
 
-The outage-risk artifacts are June-current prototype evidence, not final
-forecasting claims: their current labels use row offsets rather than verified
-continuous clock hours and their split is not horizon-purged.
+The separate incident-risk experiments now use continuous clock-hour labels and
+horizon-purged timestamp partitions. They remain future-work evidence rather
+than deployable forecasting claims because their held-out precision, recall,
+and F1 do not jointly meet the project's acceptance criterion.
 
 ## Scope and reproducibility
 
@@ -40,7 +44,10 @@ historical result can be regenerated from a bare clone.
 
 - The publishable canonical station-hour dataset and station registry.
 - The live reproducible label file, `data/labels/episode_labels.csv`.
-- Current availability evidence and preliminary outage-risk artifacts.
+- Current full/partial availability evidence, health-score artifacts, health
+  forecast figures, and the latest operational scorecard.
+- Corrected incident-risk construction and comparison code, retained as
+  future-work evidence rather than a delivered predictor.
 - Analysis, labelling, modelling, evaluation, and report-asset code.
 - Regression tests and architecture documentation for the live system.
 
@@ -52,9 +59,11 @@ historical result can be regenerated from a bare clone.
 | Detection features | `scripts/rebuild_detection_features.py` | Rebuild statistical, reference, spatial, and feature-matrix evidence from the published dataset and separately supplied five-minute inputs. |
 | Episode labels | `scripts/build_labels.py` | Apply the reproducible multi-label rules and write the live episode labels. |
 | Hour-level dataset | `scripts/build_hourly_dataset.py` | Expand episode labels into past-only short and long station-hour tensors. |
-| Model training | `scripts/train_hourly_detection.py` | Train the baseline or RGFN and run the fixed training workflows. |
+| Model training and retrospective reason codes | `scripts/train_hourly_detection.py` | Train the baseline or RGFN, run fixed comparisons, and evaluate event-level mechanism reason codes. |
 | RGFN tuning | `scripts/tune_hourly_detection.py` | Run or resume RGFN architecture and feature experiments. |
-| Outage-risk evaluation | `scripts/evaluate_outage_risk.py` | Evaluate the independent 6/12/24-hour future-outage task. |
+| Availability classification | `src/availability/build_availability_events.py` | Define full outages, partial sensor-group outages, structural gaps, and reliability summaries. |
+| Station health, forecast, and scorecard | `scripts/build_station_health.py` | Build causal health scores; use `--forecast` for five horizons and `--scorecard` for the current station snapshot. |
+| Incident-risk experiments | `scripts/evaluate_outage_risk.py` | Build corrected 6/12/24-hour fault/outage targets and run future-work comparisons. |
 | Report assets | `scripts/generate_report_assets.py` | Generate methodology and result figures. |
 
 See [REPO_MAP.md](REPO_MAP.md) for the detailed data flow, modules, inputs,
@@ -69,8 +78,8 @@ python -m pip install -r requirements.txt
 python -m pytest -q
 ```
 
-The directly runnable outage-risk evaluator is retained as a prototype route,
-not as a final report-headline result:
+The incident-risk front door defaults to corrected label/split construction.
+Its model routes are research comparisons, not final operational claims:
 
 ```bash
 python scripts/evaluate_outage_risk.py
@@ -94,6 +103,26 @@ been supplied or rebuilt; their exact dependencies are listed in
 [REPO_MAP.md](REPO_MAP.md). Each front door checks its prerequisites before
 writing outputs and reports every missing input together.
 
+The current-health score is independently reproducible from the published
+canonical data and a regenerated public reference cache:
+
+```bash
+python scripts/build_station_health.py
+```
+
+The forecast comparison and scorecard use the same front door:
+
+```bash
+python scripts/build_station_health.py --forecast
+python scripts/build_station_health.py --scorecard
+```
+
+`--forecast` generates ignored evaluation files and five selected model bundles
+under `data/eval/health_forecast/` and `data/model/health_forecast/`.
+`--scorecard` requires those generated models. The tracked scorecard CSV,
+report, invariants, and causal audit are published so the completed snapshot can
+be inspected even when the ignored model bundles are not present in a clone.
+
 ## Live labels and states
 
 `data/labels/episode_labels.csv` is the live label source used by the hourly
@@ -109,15 +138,21 @@ For a non-fault station-hour, `display_state` distinguishes `benign` (at least
 one detector fired) from `clean` (no detector fired). This is display metadata,
 not a separate model target.
 
+Reason-code evaluation is retrospective and event-level. It assigns one or
+more fault-mechanism codes after grouping by reviewed event identity; it is not
+presented as a causal live-dashboard diagnosis. Component localisation remains
+evaluated development work rather than a claimed delivered output.
+
 ## Repository structure
 
-- `data/merged/` — published canonical station-hour dataset and registry.
-- `data/labels/` — live episode labels and Layer 2 calibration evidence.
-- `data/processed/` — published audit and availability evidence.
-- `data/eval/` — preliminary outage-risk prototype artifacts.
-- `src/` — analysis, labelling, feature, model, reliability, and report code.
-- `scripts/` — the eight public pipeline front doors.
-- `tests/` — regression tests for the retained public system.
+- `data/merged/` - published canonical station-hour dataset and registry.
+- `data/labels/` - live episode labels and Layer 2 calibration evidence.
+- `data/processed/` - published audit, availability, health, and scorecard evidence.
+- `data/eval/` - retained risk-experiment evidence; generated health-forecast
+  evaluation files are ignored.
+- `src/` - analysis, labelling, feature, model, reliability, and report code.
+- `scripts/` - the nine public pipeline front doors.
+- `tests/` - regression tests for the retained public system.
 
 ## Licence and data use
 

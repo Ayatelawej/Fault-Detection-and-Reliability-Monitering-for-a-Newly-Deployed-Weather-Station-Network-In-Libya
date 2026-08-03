@@ -9,7 +9,7 @@ import numpy as np
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression
 
-from src.model.hourly_baseline import binary_metrics
+from src.model.hourly_baseline import HourlyLogisticScaler, binary_metrics
 from src.model.hourly_calibration import CALIBRATION_THRESHOLDS, select_operating_point, target_check
 
 
@@ -24,37 +24,6 @@ class HourlyLogisticTuningConfig:
     max_iter: int = 2000
     c_value: float = 1.0
     tolerance: float = 1e-4
-
-
-@dataclass
-class HourlyLogisticScaler:
-    median: np.ndarray
-    iqr: np.ndarray
-
-    @classmethod
-    def fit(cls, values: np.ndarray, train_indices: np.ndarray) -> "HourlyLogisticScaler":
-        selected = np.asarray(train_indices, dtype=np.int64)
-        if not len(selected):
-            raise ValueError("logistic preprocessing requires training examples")
-        train_values = np.asarray(values, dtype=np.float32)[selected]
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            median = np.nanpercentile(train_values, 50, axis=0).astype(np.float32)
-            q25 = np.nanpercentile(train_values, 25, axis=0).astype(np.float32)
-            q75 = np.nanpercentile(train_values, 75, axis=0).astype(np.float32)
-        iqr = (q75 - q25).astype(np.float32)
-        median[~np.isfinite(median)] = 0.0
-        iqr[~np.isfinite(iqr)] = 1.0
-        iqr[iqr == 0.0] = 1.0
-        return cls(median=median, iqr=iqr)
-
-    def transform(self, values: np.ndarray) -> np.ndarray:
-        scaled = (np.asarray(values, dtype=np.float32) - self.median.reshape(1, -1)) / self.iqr.reshape(1, -1)
-        scaled = np.clip(scaled, -5.0, 5.0)
-        return np.nan_to_num(scaled, nan=0.0, posinf=5.0, neginf=-5.0).astype(np.float32)
-
-    def payload(self) -> dict[str, np.ndarray]:
-        return {"median": self.median, "iqr": self.iqr}
 
 
 def _names(examples: dict[str, np.ndarray], key: str, width: int, prefix: str) -> list[str]:

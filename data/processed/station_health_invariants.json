@@ -1,0 +1,25 @@
+{
+  "delete_the_future_passed": true,
+  "fault_burden_source": "causal_rule_evidence",
+  "full_outage_scored_rows": 37654,
+  "input_hashes_after": {
+    "canonical_station_hourly_dataset": "28be01ae9cfd381e69236242894598bbe02e0f03b60168453788d6bb0583fc86",
+    "exact_hour_reference_cache": "d8f989a39bcc3d5e36e4ab36a2c8f41280204a01031af82cbafa6c55ca221b0d"
+  },
+  "input_hashes_before": {
+    "canonical_station_hourly_dataset": "28be01ae9cfd381e69236242894598bbe02e0f03b60168453788d6bb0583fc86",
+    "exact_hour_reference_cache": "d8f989a39bcc3d5e36e4ab36a2c8f41280204a01031af82cbafa6c55ca221b0d"
+  },
+  "input_hashes_unchanged": true,
+  "insufficient_history_rows": 4342,
+  "outage_duration_curve_monotonic": true,
+  "outage_duration_multiplier_exact": true,
+  "outage_scores_monotonic": true,
+  "previous_hard_zero_baseline_validation": {
+    "available": false,
+    "passed": true
+  },
+  "reference_consistency_source": "causal_external_residuals",
+  "score_rows": 165313,
+  "weighted_sum_exact": true
+}

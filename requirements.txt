@@ -3,6 +3,7 @@ numpy
 pyarrow
 scipy
 scikit-learn
+catboost>=1.2,<2
 torch
 matplotlib
 plotly
