@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from scripts import build_hourly_dataset, build_station_health, generate_report_assets
+from scripts import build_hourly_dataset, build_station_health, generate_report_assets, run_dashboard
 from scripts import evaluate_outage_risk
 from scripts.evaluate_outage_risk import parse_args as parse_outage_args
 from scripts.generate_report_assets import parse_args as parse_report_args
@@ -45,7 +45,20 @@ def test_tuning_front_door_routes_resume_mode_without_consuming_runner_options()
 
 def test_report_front_door_selects_one_figure_set() -> None:
     assert parse_report_args(["--set", "results"]) == "results"
+    assert parse_report_args(["--set", "july-evaluation"]) == "july-evaluation"
     assert parse_report_args([]) == "methodology"
+
+
+def test_dashboard_source_contains_no_evaluation_metrics_or_ground_truth() -> None:
+    source = Path(run_dashboard.__file__).read_text(encoding="utf-8").lower()
+
+    assert "confusion_matrix" not in source
+    assert "roc_auc" not in source
+    assert "average_precision" not in source
+    assert "truth_fault" not in source
+    assert "episode_labels" not in source
+    assert 'key="selected_station_id"' in source
+    assert "bundle.registry.itertuples" in source
 
 
 def test_report_all_preflights_result_inputs_before_writing_methodology_figures(monkeypatch) -> None:

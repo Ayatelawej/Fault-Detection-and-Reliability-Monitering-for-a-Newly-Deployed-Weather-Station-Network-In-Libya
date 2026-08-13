@@ -65,6 +65,13 @@ from src.config.paths import (
     STATION_RELIABILITY_SUMMARY_PATH,
     STRUCTURAL_AVAILABILITY_GAPS_PATH,
 )
+from src.dashboard.replay import (
+    ReplayBundle,
+    build_replay_snapshot,
+    replay_hours,
+    segment_predicted_fault_events,
+    station_history,
+)
 from src.features.row_state import (
     ROW_STATE_COMPLETE,
     ROW_STATE_PARTIAL,
@@ -1274,3 +1281,206 @@ def test_operational_scorecard_default_skips_terminal_padding_and_is_delete_futu
             forecast_models=_persistence_forecast_models(),
             expected_station_count=4,
         )
+
+
+def _synthetic_replay_bundle() -> ReplayBundle:
+    hours = pd.to_datetime(["2026-07-01T00:00:00Z", "2026-07-01T01:00:00Z"])
+    health = pd.DataFrame(
+        [
+            {
+                "station_id": station_id,
+                "hour_utc": hour,
+                "availability_class": availability,
+                "absent_sensor_groups": "" if availability == "online" else "anemometer",
+                "full_outage_run_hours": 0.0 if availability == "online" else float(index + 1),
+                "partial_outage_run_hours": 0.0,
+                "is_transmitting": availability != "full_outage",
+                "health_total": health_total,
+                "health_band": "Healthy" if health_total >= 80 else "Critical",
+                "weighted_health_availability": health_total * 0.35,
+                "weighted_health_sensor_completeness": health_total * 0.25,
+                "weighted_health_fault_burden": health_total * 0.16,
+                "weighted_health_reference_consistency": health_total * 0.14,
+                "weighted_health_stability": health_total * 0.10,
+                **{
+                    f"sensor_group_present_{group}": availability != "full_outage"
+                    for group in (
+                        "anemometer",
+                        "barometer",
+                        "light_uv",
+                        "rain_gauge",
+                        "thermo_hygrometer",
+                        "wind_vane",
+                    )
+                },
+                **{
+                    f"outage_projection_{horizon}h": max(0.0, health_total - horizon)
+                    for horizon in (1, 3, 6, 12, 24)
+                },
+            }
+            for index, hour in enumerate(hours)
+            for station_id, availability, health_total in [
+                ("A", "online", 90.0 - index),
+                ("B", "full_outage", 20.0 - index),
+            ]
+        ]
+    )
+    forecasts = pd.DataFrame(
+        [
+            {
+                "station_id": "A",
+                "hour_utc": hours[1],
+                "horizon_h": horizon,
+                "predicted_frozen_selected_policy": 88.0 - horizon,
+            }
+            for horizon in (1, 3, 6, 12, 24)
+        ]
+        + [
+            {
+                "station_id": "B",
+                "hour_utc": hours[1],
+                "horizon_h": horizon,
+                "predicted_frozen_selected_policy": 25.0,
+            }
+            for horizon in (1, 3, 6, 12, 24)
+        ]
+    )
+    detections = pd.DataFrame(
+        [
+            {
+                "station_id": "A",
+                "hour_utc": hours[0],
+                "random_probability": 0.20,
+                "random_prediction": 0,
+            },
+            {
+                "station_id": "A",
+                "hour_utc": hours[1],
+                "random_probability": 0.81,
+                "random_prediction": 1,
+            },
+            {
+                "station_id": "B",
+                "hour_utc": hours[0],
+                "random_probability": float("nan"),
+                "random_prediction": pd.NA,
+            },
+            {
+                "station_id": "B",
+                "hour_utc": hours[1],
+                "random_probability": float("nan"),
+                "random_prediction": pd.NA,
+            },
+        ]
+    )
+    statistical_scores = pd.DataFrame(
+        [
+            {
+                "station_id": "A",
+                "hour_utc": hours[1],
+                "channel": "temp_avg_c",
+                "zscore": 5.0,
+                "rolling_variance": 1.0,
+                "iforest_score": 0.2,
+                "flag_zscore": True,
+                "flag_stuck": False,
+                "flag_iforest": False,
+                "flag_physical": False,
+                "flag_physical_suspect": False,
+            }
+        ]
+    )
+    spatial_neighbors = pd.DataFrame(
+        [{"station_id": "A", "neighbor_id": "B", "distance_km": 10.0}]
+    )
+    registry = pd.DataFrame(
+        [
+            {"station_id": "A", "station_name": "Alpha", "city": "A", "latitude": 32.0, "longitude": 13.0},
+            {"station_id": "B", "station_name": "Beta", "city": "B", "latitude": 31.0, "longitude": 14.0},
+        ]
+    )
+    return ReplayBundle(
+        health,
+        forecasts,
+        detections,
+        statistical_scores,
+        spatial_neighbors,
+        registry,
+    )
+
+
+def test_july_replay_snapshot_preserves_stations_and_uses_selected_hgb_output() -> None:
+    bundle = _synthetic_replay_bundle()
+    snapshot = build_replay_snapshot(bundle, "2026-07-01T01:00:00Z")
+
+    assert snapshot["station_id"].tolist() == ["B", "A"]
+    alpha = snapshot.loc[snapshot["station_id"].eq("A")].iloc[0]
+    beta = snapshot.loc[snapshot["station_id"].eq("B")].iloc[0]
+    assert alpha["status"] == "Fault alert"
+    assert alpha["fault_probability"] == pytest.approx(0.81)
+    assert alpha["forecast_24h"] == pytest.approx(64.0)
+    assert alpha["category"] == "Active faults"
+    assert beta["status"] == "Full outage"
+    assert beta["full_outage_run_hours"] == pytest.approx(2.0)
+    assert beta["forecast_1h"] == pytest.approx(18.0)
+    assert beta["forecast_source_1h"] == "Continued-outage projection"
+    assert beta["category"] == "In outage"
+
+
+def test_predicted_fault_events_break_on_negative_hours_and_time_gaps() -> None:
+    hours = pd.to_datetime(
+        [
+            "2026-07-01T00:00:00Z",
+            "2026-07-01T01:00:00Z",
+            "2026-07-01T02:00:00Z",
+            "2026-07-01T04:00:00Z",
+            "2026-07-01T05:00:00Z",
+        ]
+    )
+    detections = pd.DataFrame(
+        {
+            "station_id": ["A"] * 5,
+            "hour_utc": hours,
+            "random_probability": [0.8, 0.9, 0.2, 0.7, 0.8],
+            "random_prediction": [1, 1, 0, 1, 1],
+        }
+    )
+
+    events = segment_predicted_fault_events(detections)
+
+    assert events["duration_hours"].tolist() == [2, 2]
+    assert events["start_hour"].tolist() == [hours[0], hours[3]]
+    assert events["status"].tolist() == ["closed", "active"]
+
+    later = segment_predicted_fault_events(detections, "2026-07-01T06:00:00Z")
+
+    assert later["status"].tolist() == ["closed", "closed"]
+
+
+def test_predicted_event_replay_does_not_reveal_future_duration() -> None:
+    detections = pd.DataFrame(
+        {
+            "station_id": ["A", "A", "A"],
+            "hour_utc": pd.to_datetime(
+                ["2026-07-01T00:00:00Z", "2026-07-01T01:00:00Z", "2026-07-01T02:00:00Z"]
+            ),
+            "random_probability": [0.8, 0.9, 0.95],
+            "random_prediction": [1, 1, 1],
+        }
+    )
+
+    visible = segment_predicted_fault_events(detections, "2026-07-01T01:00:00Z")
+
+    assert visible.iloc[0]["duration_hours"] == 2
+    assert visible.iloc[0]["end_hour"] == pd.Timestamp("2026-07-01T01:00:00Z")
+
+
+def test_july_replay_history_is_past_only() -> None:
+    bundle = _synthetic_replay_bundle()
+    history = station_history(bundle, "A", "2026-07-01T00:00:00Z")
+
+    assert history["hour_utc"].tolist() == [pd.Timestamp("2026-07-01T00:00:00Z")]
+    assert replay_hours(bundle) == [
+        pd.Timestamp("2026-07-01T00:00:00Z"),
+        pd.Timestamp("2026-07-01T01:00:00Z"),
+    ]

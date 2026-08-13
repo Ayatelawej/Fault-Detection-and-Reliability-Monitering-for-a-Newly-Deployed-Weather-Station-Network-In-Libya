@@ -14,8 +14,10 @@ retrospective event-level mechanism reason codes. The reliability route adds
 full/partial outage classification, a causal current-health score, five
 health-forecast horizons for transmitting stations, and a combined operational
 scorecard. Corrected incident-risk experiments are retained as future work.
+The final product layer is a read-only July replay dashboard over frozen binary
+detection, health, forecast, and detector-evidence artifacts.
 
-There are nine public front doors in `scripts/`. The public workflow begins
+There are ten public front doors in `scripts/`. The public workflow begins
 with the published canonical data file, not raw-source acquisition:
 
 ```text
@@ -27,6 +29,7 @@ data/merged/station_hourly_merged.csv
   -> baseline / RGFN training, tuning, and retrospective reason codes
   -> full/partial availability evidence
   -> current health -> five-horizon health forecast -> station scorecard
+  -> independent July scoring artifacts -> operational replay dashboard
   -> incident-risk experiments and report figures
 ```
 
@@ -259,10 +262,11 @@ forecasting claims, because the acceptance criterion was not met.
 **Purpose.** Produce methodology and results figures for the project report.
 
 **Front door.** `scripts/generate_report_assets.py` with `--set methodology`,
-`results`, or `all`.
+`results`, `july-evaluation`, or `all`.
 
 **Main code.** `src/workflows/build_methodology_figures.py`,
-`build_result_figures.py`, and `src/rules/result_figures.py`.
+`build_result_figures.py`, `build_july_evaluation_figures.py`, and
+`src/rules/result_figures.py`.
 
 **Inputs/outputs.** Methodology figures read the registry and hourly row states.
 Some result figures also require preserved historical evidence queues that are
@@ -271,6 +275,25 @@ the default public-safe set; results and all preflight their historical inputs
 before either figure set writes output.
 
 **Tests.** `tests/test_result_figures.py` and
+`tests/test_front_door_scripts.py`.
+
+### 11. July operational replay dashboard
+
+**Purpose.** Replay the frozen July 2026 operational state without loading a
+model, retraining, rescoring, or writing under `data/`.
+
+**Front door.** `scripts/run_dashboard.py`
+
+**Main code.** `src/dashboard/replay.py` loads the five frozen dashboard
+artifacts, builds causal snapshots, segments consecutive predicted HGB-positive
+hours, and prepares station/event evidence.
+
+**Inputs/outputs.** Reads the published July health, forecast, binary-prediction,
+statistical-score, spatial-neighbour, and station-registry files. The dashboard
+has no output artifact. Network, Station, and Evidence tabs show operational
+state rather than model-performance diagnostics.
+
+**Tests.** `tests/test_availability.py` and
 `tests/test_front_door_scripts.py`.
 
 ## Module index
@@ -299,6 +322,12 @@ Package markers are omitted below unless they contain runtime code.
 |---|---|
 | `paths.py` | Central project/data paths, canonical schema expectations, and the neutral `FIVE_MINUTE_INPUT_DIR` setting. |
 | `test_paths.py` | Active pytest data-contract checks; it is intentionally collected from `src/config/`. |
+
+### `src/dashboard/`
+
+| Module | Role |
+|---|---|
+| `replay.py` | Loads frozen July artifacts, builds station snapshots, segments predicted fault runs, and prepares compact operational evidence. |
 
 ### `src/features/`
 
@@ -357,6 +386,7 @@ Package markers are omitted below unless they contain runtime code.
 |---|---|
 | `build_methodology_figures.py` | Methodology figure generation. |
 | `build_result_figures.py` | Results figure generation. |
+| `build_july_evaluation_figures.py` | Selected-HGB class distribution, confusion matrix, ROC/PR curves, and July health-forecast figure generation. |
 | `rebuild_detection_features.py` | Public analysis orchestration for the full feature rebuild. |
 | `resume_hourly_tuning.py` | Resume helper for persisted tuning work. |
 | `train_hourly_baseline.py` | Baseline and retrospective reason-code front-door workflow. |
@@ -382,6 +412,10 @@ Package markers are omitted below unless they contain runtime code.
 | `data/processed/station_health_scores.parquet` and `station_health_summary.csv` | Published current-health evidence | Causal score components, total, band, summaries, and diagnostics. |
 | `data/processed/station_operational_scorecard.csv` | Published operational snapshot | One current row per station, with health, forecast, availability, evidence, and reliability fields. |
 | `data/eval/health_forecast/` and `data/model/health_forecast/` | Ignored generated artifacts | Created by `build_station_health.py --forecast`; required to regenerate the scorecard. |
+| `data/eval/july_2026_health/station_health_scores_through_july.parquet` | Published dashboard input | Causal station-health history through July. |
+| `data/eval/july_2026_health_forecast/july_health_forecast_predictions.parquet` | Published dashboard input | Frozen selected-policy forecasts at 1/3/6/12/24 hours. |
+| `data/eval/july_2026_scoring/july_binary_predictions.parquet` | Published dashboard input | Frozen selected-HGB probabilities and predictions. |
+| `data/eval/july_2026_features/statistical_anomaly_scores.parquet` and `spatial_neighbors.csv` | Published dashboard evidence | Detector margins, external evidence availability, and neighbour context. |
 | `data/processed/data_audit_summary.csv` and `missingness_by_variable.csv` | Published audit evidence | Dataset quality summaries. |
 | `data/eval/outage_risk_*.csv` and `outage_risk_predictions.parquet` | Retained historical prototype evidence | Pre-correction outputs; not final forecasting claims. The current front door rebuilds corrected labels/splits. |
 | `data/external/reference_hourly/` | Ignored generated cache | Created by public reference fetch. |
@@ -434,6 +468,9 @@ inputs nor evidence for the retained model path.
 - **Reason codes:** retrospective multi-label mechanism verdicts aggregated at
   reviewed event level. They are explanatory evaluation outputs, not causal
   live-event segmentation.
+- **July replay:** a deterministic simulated clock over frozen out-of-time
+  outputs. Events are segmented from predicted consecutive fault hours, never
+  from reviewed episode identifiers.
 
 ## How to run the public workflow
 
@@ -471,6 +508,10 @@ python scripts/evaluate_outage_risk.py --target fault
 
 # Public-safe report figures
 python scripts/generate_report_assets.py --set methodology
+python scripts/generate_report_assets.py --set july-evaluation
+
+# Frozen July operational replay
+python -m streamlit run scripts/run_dashboard.py
 ```
 
 Use `--help` for the front doors that expose command-line options. The fixed

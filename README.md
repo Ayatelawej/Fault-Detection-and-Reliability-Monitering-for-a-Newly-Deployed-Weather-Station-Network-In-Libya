@@ -13,6 +13,12 @@ path adds full/partial outage classification, a causal 0-100 station-health
 score, transmitting-station health forecasts at 1/3/6/12/24 hours, and a
 combined 26-station operational scorecard.
 
+The final system also includes a read-only Streamlit dashboard that replays the
+independent July 2026 evaluation. The operational HGB model and all thresholds
+were selected before July was scored. On 13,565 eligible July station-hours it
+achieved 0.714 precision, 0.813 recall, 0.761 F1, 0.936 accuracy, 0.977 AUROC,
+and 0.865 AUPRC without refitting.
+
 The separate incident-risk experiments now use continuous clock-hour labels and
 horizon-purged timestamp partitions. They remain future-work evidence rather
 than deployable forecasting claims because their held-out precision, recall,
@@ -46,6 +52,8 @@ historical result can be regenerated from a bare clone.
 - The live reproducible label file, `data/labels/episode_labels.csv`.
 - Current full/partial availability evidence, health-score artifacts, health
   forecast figures, and the latest operational scorecard.
+- Frozen July binary predictions, health forecasts, detector evidence, selected
+  HGB evaluation figures, and the read-only replay dashboard.
 - Corrected incident-risk construction and comparison code, retained as
   future-work evidence rather than a delivered predictor.
 - Analysis, labelling, modelling, evaluation, and report-asset code.
@@ -65,6 +73,7 @@ historical result can be regenerated from a bare clone.
 | Station health, forecast, and scorecard | `scripts/build_station_health.py` | Build causal health scores; use `--forecast` for five horizons and `--scorecard` for the current station snapshot. |
 | Incident-risk experiments | `scripts/evaluate_outage_risk.py` | Build corrected 6/12/24-hour fault/outage targets and run future-work comparisons. |
 | Report assets | `scripts/generate_report_assets.py` | Generate methodology and result figures. |
+| July replay dashboard | `scripts/run_dashboard.py` | Display frozen July network, station-health, forecast, and detector-evidence artifacts without inference or writes. |
 
 See [REPO_MAP.md](REPO_MAP.md) for the detailed data flow, modules, inputs,
 outputs, and test coverage.
@@ -123,6 +132,17 @@ under `data/eval/health_forecast/` and `data/model/health_forecast/`.
 report, invariants, and causal audit are published so the completed snapshot can
 be inspected even when the ignored model bundles are not present in a clone.
 
+Run the frozen July operational replay:
+
+```bash
+python -m streamlit run scripts/run_dashboard.py
+```
+
+The dashboard has Network, Station, and Evidence tabs. It segments events from
+consecutive HGB-positive hours and never reads ground-truth episode IDs. Active
+full outages receive clearly labelled continued-outage projections rather than
+learned recovery forecasts.
+
 ## Live labels and states
 
 `data/labels/episode_labels.csv` is the live label source used by the hourly
@@ -148,11 +168,15 @@ evaluated development work rather than a claimed delivered output.
 - `data/merged/` - published canonical station-hour dataset and registry.
 - `data/labels/` - live episode labels and Layer 2 calibration evidence.
 - `data/processed/` - published audit, availability, health, and scorecard evidence.
-- `data/eval/` - retained risk-experiment evidence; generated health-forecast
-  evaluation files are ignored.
+- `data/eval/` - retained research evidence plus the frozen July artifacts used
+  by the read-only dashboard.
 - `src/` - analysis, labelling, feature, model, reliability, and report code.
-- `scripts/` - the nine public pipeline front doors.
+- `scripts/` - the ten public pipeline front doors.
 - `tests/` - regression tests for the retained public system.
+
+The final report is available in both Word and PDF form under `docs/report/`.
+`docs/DEMO_GUIDE.md`, `docs/VIVA_STUDY_GUIDE.md`, and
+`docs/SUBMISSION_CHECKLIST.md` provide a concise handoff.
 
 ## Licence and data use
 

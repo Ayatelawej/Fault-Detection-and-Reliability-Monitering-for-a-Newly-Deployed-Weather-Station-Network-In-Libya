@@ -12,6 +12,10 @@ from src.workflows.build_result_figures import (
     main as build_results,
     require_result_inputs,
 )
+from src.workflows.build_july_evaluation_figures import (
+    main as build_july_evaluation,
+    require_july_evaluation_inputs,
+)
 from src.config.paths import HOURLY_ROW_STATES_PATH, STATION_REGISTRY_PATH
 from src.workflows.prerequisites import require_files
 
@@ -20,7 +24,7 @@ def parse_args(argv: list[str] | None = None) -> str:
     parser = ArgumentParser(description="Generate report figure assets.")
     parser.add_argument(
         "--set",
-        choices=("methodology", "results", "all"),
+        choices=("methodology", "results", "july-evaluation", "all"),
         default="methodology",
         dest="figure_set",
     )
@@ -39,10 +43,14 @@ def main(argv: list[str] | None = None) -> None:
         )
     if figure_set in {"results", "all"}:
         require_result_inputs()
+    if figure_set in {"july-evaluation", "all"}:
+        require_july_evaluation_inputs()
     if figure_set in {"methodology", "all"}:
         build_methodology()
     if figure_set in {"results", "all"}:
         build_results()
+    if figure_set in {"july-evaluation", "all"}:
+        build_july_evaluation()
 
 
 if __name__ == "__main__":
