@@ -18,6 +18,10 @@ from src.availability.health_score import (
     write_station_health_outputs,
 )
 from src.availability.health_forecast import (
+    HEALTH_FORECAST_FEATURE_SETS,
+    HEALTH_FORECAST_HORIZONS,
+    HEALTH_FORECAST_LONG_FEATURE_SETS,
+    HEALTH_FORECAST_LONG_HORIZONS,
     run_health_forecast,
     write_health_forecast_outputs,
 )
@@ -37,6 +41,11 @@ from src.config.paths import (
     HEALTH_FORECAST_CALIBRATION_FIGURE_PATH,
     HEALTH_FORECAST_DIR,
     HEALTH_FORECAST_HORIZON_DEGRADATION_FIGURE_PATH,
+    HEALTH_FORECAST_LONG_HORIZON_BASELINE_COMPARISON_FIGURE_PATH,
+    HEALTH_FORECAST_LONG_HORIZON_CALIBRATION_FIGURE_PATH,
+    HEALTH_FORECAST_LONG_HORIZON_DEGRADATION_FIGURE_PATH,
+    HEALTH_FORECAST_LONG_HORIZON_DIR,
+    HEALTH_FORECAST_LONG_HORIZON_MODEL_DIR,
     HEALTH_FORECAST_MODEL_DIR,
     HEALTH_OUTAGE_DURATION_TRAJECTORY_FIGURE_PATH,
     HEALTH_STATION_TIMESERIES_FIGURE_PATH,
@@ -127,6 +136,11 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
         action="store_true",
         help="Assemble the causal per-station operational snapshot without training models.",
     )
+    mode.add_argument(
+        "--long-horizon-forecast",
+        action="store_true",
+        help="Train and evaluate the separate 2-to-7-day health forecast comparison.",
+    )
     parser.add_argument(
         "--forecast-output-dir",
         type=Path,
@@ -138,6 +152,12 @@ def parse_args(argv: list[str] | None = None) -> Namespace:
         default=HEALTH_FORECAST_MODEL_DIR,
     )
     parser.add_argument("--forecast-causality-samples", type=int, default=8)
+    parser.add_argument(
+        "--long-horizon-features",
+        choices=("current", "extended"),
+        default="extended",
+        help="Feature comparison used only with --long-horizon-forecast.",
+    )
     parser.add_argument(
         "--reference-hour",
         default=None,
@@ -246,25 +266,109 @@ def _run_forecast(args: Namespace) -> None:
     )
     if args.forecast_causality_samples <= 0:
         raise ValueError("--forecast-causality-samples must be positive")
+    long_horizon = bool(args.long_horizon_forecast)
+    horizons = HEALTH_FORECAST_LONG_HORIZONS if long_horizon else HEALTH_FORECAST_HORIZONS
+    long_variant = str(args.long_horizon_features)
+    output_directory = (
+        HEALTH_FORECAST_LONG_HORIZON_DIR / long_variant
+        if long_horizon
+        else args.forecast_output_dir
+    )
+    model_directory = (
+        HEALTH_FORECAST_LONG_HORIZON_MODEL_DIR / long_variant
+        if long_horizon
+        else args.forecast_model_dir
+    )
+    feature_sets = (
+        HEALTH_FORECAST_LONG_FEATURE_SETS
+        if long_horizon and long_variant == "extended"
+        else HEALTH_FORECAST_FEATURE_SETS
+    )
+    comparison_figure = (
+        HEALTH_FORECAST_LONG_HORIZON_BASELINE_COMPARISON_FIGURE_PATH
+        if long_horizon
+        else HEALTH_FORECAST_BASELINE_COMPARISON_FIGURE_PATH
+    )
+    calibration_figure = (
+        HEALTH_FORECAST_LONG_HORIZON_CALIBRATION_FIGURE_PATH
+        if long_horizon
+        else HEALTH_FORECAST_CALIBRATION_FIGURE_PATH
+    )
+    degradation_figure = (
+        HEALTH_FORECAST_LONG_HORIZON_DEGRADATION_FIGURE_PATH
+        if long_horizon
+        else HEALTH_FORECAST_HORIZON_DEGRADATION_FIGURE_PATH
+    )
+    if long_horizon:
+        comparison_figure = comparison_figure.with_name(
+            f"{comparison_figure.stem}_{long_variant}{comparison_figure.suffix}"
+        )
+        calibration_figure = calibration_figure.with_name(
+            f"{calibration_figure.stem}_{long_variant}{calibration_figure.suffix}"
+        )
+        degradation_figure = degradation_figure.with_name(
+            f"{degradation_figure.stem}_{long_variant}{degradation_figure.suffix}"
+        )
+    original_model_directory = args.forecast_model_dir
+    args.forecast_model_dir = model_directory
     before = _forecast_input_hashes(args)
     scores = pd.read_parquet(args.scores_output)
     metadata = pd.read_csv(args.observations, usecols=["station_id", "elevation"])
     run = run_health_forecast(
         scores,
         station_metadata=metadata,
+        horizons=horizons,
         feature_audit_samples=args.forecast_causality_samples,
-        model_directory=args.forecast_model_dir,
+        model_directory=model_directory,
+        feature_sets=feature_sets,
     )
     after = _forecast_input_hashes(args)
+    args.forecast_model_dir = original_model_directory
     outputs = write_health_forecast_outputs(
         run,
-        output_directory=args.forecast_output_dir,
-        comparison_figure_path=HEALTH_FORECAST_BASELINE_COMPARISON_FIGURE_PATH,
-        calibration_figure_path=HEALTH_FORECAST_CALIBRATION_FIGURE_PATH,
-        degradation_figure_path=HEALTH_FORECAST_HORIZON_DEGRADATION_FIGURE_PATH,
+        output_directory=output_directory,
+        comparison_figure_path=comparison_figure,
+        calibration_figure_path=calibration_figure,
+        degradation_figure_path=degradation_figure,
         input_hashes_before=before,
         input_hashes_after=after,
     )
+    if long_horizon and long_variant == "extended":
+        current_accuracy_path = (
+            HEALTH_FORECAST_LONG_HORIZON_DIR
+            / "current"
+            / "health_forecast_accuracy_curve.csv"
+        )
+        if current_accuracy_path.is_file():
+            current_accuracy = pd.read_csv(current_accuracy_path).rename(
+                columns={
+                    "n": "current_n",
+                    "accuracy": "current_feature_accuracy",
+                }
+            )
+            extended_accuracy = pd.read_csv(outputs["accuracy_curve"]).rename(
+                columns={
+                    "n": "extended_n",
+                    "accuracy": "validation_selected_extended_accuracy",
+                }
+            )
+            accuracy_comparison = current_accuracy.merge(
+                extended_accuracy,
+                on="horizon_h",
+                how="outer",
+                validate="one_to_one",
+            ).sort_values("horizon_h", kind="mergesort")
+            accuracy_comparison["accuracy_change"] = (
+                accuracy_comparison["validation_selected_extended_accuracy"]
+                - accuracy_comparison["current_feature_accuracy"]
+            )
+            comparison_path = (
+                HEALTH_FORECAST_LONG_HORIZON_DIR
+                / "health_forecast_accuracy_comparison.csv"
+            )
+            comparison_path.parent.mkdir(parents=True, exist_ok=True)
+            accuracy_comparison.to_csv(comparison_path, index=False)
+            outputs["accuracy_comparison"] = comparison_path
     print(Path(outputs["report"]).read_text(encoding="utf-8"))
     print("OUTPUTS")
     for name, path in outputs.items():
@@ -356,7 +460,7 @@ def _run_scorecard(args: Namespace) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    if args.forecast:
+    if args.forecast or args.long_horizon_forecast:
         _run_forecast(args)
         return
     if args.scorecard:

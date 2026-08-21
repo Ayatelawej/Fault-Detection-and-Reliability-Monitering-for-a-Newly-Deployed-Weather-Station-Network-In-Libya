@@ -33,11 +33,15 @@ from src.availability.health_score import (
 from src.availability.health_forecast import (
     FittedHealthForecastModel,
     HEALTH_FORECAST_ALPHA_GRID,
+    HEALTH_FORECAST_CORE_FEATURES,
     HEALTH_FORECAST_HORIZONS,
+    HEALTH_FORECAST_LONG_FEATURES,
+    HEALTH_FORECAST_LONG_HORIZONS,
     _band_labels,
     _binary_classification_metrics,
     _delta_predictions_from_levels,
     _health_from_residual,
+    _feature_columns_for_set,
     _multiclass_metrics,
     _select_residual_alpha,
     _trajectory_labels,
@@ -944,6 +948,77 @@ def test_health_forecast_uses_five_horizons_and_exact_future_clock_hours() -> No
         assert row["target_delta_health"] == pytest.approx(
             expected - row["health_total"]
         )
+
+
+def test_health_forecast_supports_exact_daily_horizons_through_one_week() -> None:
+    observations, reference = _synthetic_health_inputs(periods=480)
+    scores = build_station_health_scores(observations, reference)
+    assert HEALTH_FORECAST_LONG_HORIZONS == (48, 72, 96, 120, 144, 168)
+    bundle = build_health_forecast_dataset(scores, horizons=(168,))
+    frame = health_forecast_horizon_frame(bundle, 168)
+    origin_hour = pd.Timestamp("2026-01-10 00:00:00", tz="UTC")
+    row = frame.loc[frame["hour_utc"].eq(origin_hour)].iloc[0]
+    expected_hour = origin_hour + pd.Timedelta(hours=168)
+    expected = scores.loc[
+        scores["hour_utc"].eq(expected_hour), "health_total"
+    ].iloc[0]
+
+    assert row["label_end_utc"] == expected_hour
+    assert row["target_health_total"] == pytest.approx(expected)
+    projected = roll_forward_health_no_new_incident(scores, 168)
+    assert projected.loc[scores["health_total"].notna()].between(0.0, 100.0).all()
+
+
+def test_long_horizon_features_are_causal_and_available() -> None:
+    observations, reference = _synthetic_health_inputs(periods=900)
+    scores = build_station_health_scores(observations, reference)
+    cutoff = pd.Timestamp("2026-01-25 00:00:00", tz="UTC")
+    original = build_health_forecast_features(scores)
+    assert set(HEALTH_FORECAST_LONG_FEATURES).difference(
+        {
+            "feature_target_hour_sin",
+            "feature_target_hour_cos",
+            "feature_target_day_of_year_sin",
+            "feature_target_day_of_year_cos",
+        }
+    ).issubset(original.frame.columns)
+    altered = scores.copy(deep=True)
+    altered.loc[altered["hour_utc"].gt(cutoff), "health_total"] = 0.0
+    rebuilt = build_health_forecast_features(
+        altered,
+        station_ids=original.station_ids,
+    )
+    columns = [
+        column
+        for column in HEALTH_FORECAST_LONG_FEATURES
+        if column in original.frame.columns
+    ]
+    before = original.frame.loc[original.frame["hour_utc"].eq(cutoff), columns]
+    after = rebuilt.frame.loc[rebuilt.frame["hour_utc"].eq(cutoff), columns]
+
+    assert np.isclose(
+        before.to_numpy(dtype=float),
+        after.to_numpy(dtype=float),
+        rtol=1e-10,
+        atol=1e-12,
+        equal_nan=True,
+    ).all()
+
+
+def test_long_horizon_features_do_not_change_existing_feature_sets() -> None:
+    observations, reference = _synthetic_health_inputs(periods=900)
+    scores = build_station_health_scores(observations, reference)
+    bundle = build_health_forecast_features(scores)
+    core = _feature_columns_for_set(bundle, "core")
+    full = _feature_columns_for_set(bundle, "full_engineered")
+    long_horizon = _feature_columns_for_set(bundle, "long_horizon")
+    new_features = set(HEALTH_FORECAST_LONG_FEATURES).difference(
+        HEALTH_FORECAST_CORE_FEATURES
+    )
+
+    assert core == HEALTH_FORECAST_CORE_FEATURES
+    assert not set(full).intersection(new_features)
+    assert new_features.issubset(long_horizon)
 
 
 def test_no_new_incident_roll_forward_is_identity_at_zero_and_progressive_in_outage() -> None:

@@ -58,6 +58,7 @@ from src.config.paths import MEASUREMENT_COLUMNS
 
 
 HEALTH_FORECAST_HORIZONS = (1, 3, 6, 12, 24)
+HEALTH_FORECAST_LONG_HORIZONS = (48, 72, 96, 120, 144, 168)
 HEALTH_TREND_WINDOW_HOURS = 24
 HEALTH_FORECAST_METHODS = (
     "persistence",
@@ -70,6 +71,7 @@ HEALTH_FORECAST_RECENCY_HALF_LIVES_DAYS = (None, 90, 60, 30)
 HEALTH_FORECAST_TREE_ITERATION_GRID = (100, 200, 300)
 HEALTH_FORECAST_MODEL_FAMILIES = ("hist_gradient_boosting", "catboost", "ridge")
 HEALTH_FORECAST_FEATURE_SETS = ("core", "full_engineered")
+HEALTH_FORECAST_LONG_FEATURE_SETS = (*HEALTH_FORECAST_FEATURE_SETS, "long_horizon")
 HEALTH_FORECAST_CLASSIFIER_ITERATIONS = 200
 HEALTH_FORECAST_CLASSIFIER_THRESHOLD_GRID = tuple(
     float(value) for value in np.linspace(0.10, 0.90, 17)
@@ -136,6 +138,40 @@ HEALTH_FORECAST_CORE_FEATURES = (
     ),
     "feature_station_age_hours",
     *HEALTH_FORECAST_NETWORK_FEATURES,
+)
+HEALTH_FORECAST_LONG_FEATURES = (
+    *HEALTH_FORECAST_CORE_FEATURES,
+    *tuple(
+        f"feature_health_{statistic}_{window}h"
+        for window in (168, 336, 720)
+        for statistic in ("mean", "std", "min", "max")
+    ),
+    *tuple(f"feature_health_slope_{window}h" for window in (168, 336, 720)),
+    *tuple(f"feature_missing_fraction_{window}h" for window in (168, 336, 720)),
+    *tuple(f"feature_transmitting_fraction_{window}h" for window in (168, 336, 720)),
+    *tuple(
+        f"feature_sensor_group_present_fraction_{window}h_{group}"
+        for window in (168, 336, 720)
+        for group in SENSOR_GROUP_ORDER
+    ),
+    *tuple(f"feature_health_band_fraction_{window}h_{band.lower()}" for window in (168, 336, 720) for band in HEALTH_BANDS),
+    "feature_hours_in_current_health_band",
+    "feature_target_hour_sin",
+    "feature_target_hour_cos",
+    "feature_target_day_of_year_sin",
+    "feature_target_day_of_year_cos",
+)
+HEALTH_FORECAST_BAND_INTERVALS = (
+    ("healthy", 80.0, np.inf),
+    ("watch", 60.0, 80.0),
+    ("degraded", 40.0, 60.0),
+    ("critical", -np.inf, 40.0),
+)
+HEALTH_FORECAST_TARGET_CALENDAR_FEATURES = (
+    "feature_target_hour_sin",
+    "feature_target_hour_cos",
+    "feature_target_day_of_year_sin",
+    "feature_target_day_of_year_cos",
 )
 
 
@@ -269,7 +305,7 @@ def _add_station_features(station: pd.DataFrame) -> pd.DataFrame:
     feature_values: dict[str, pd.Series | np.ndarray] = {}
     hours = result["hour_utc"]
     health = pd.to_numeric(result["health_total"], errors="coerce")
-    for lag in (6, 12, 24, 72):
+    for lag in (6, 12, 24, 72, 168, 336, 720):
         lagged_hour = hours.shift(lag)
         exact = hours.sub(lagged_hour).dt.total_seconds().div(3600.0).eq(lag)
         feature_values[f"feature_health_slope_{lag}h"] = (
@@ -283,7 +319,7 @@ def _add_station_features(station: pd.DataFrame) -> pd.DataFrame:
     )
     missing_now = measurement.isna().mean(axis=1)
     feature_values["feature_missing_fraction_now"] = missing_now
-    for window in (6, 24, 72):
+    for window in (6, 24, 72, 168, 336, 720):
         feature_values[f"feature_missing_fraction_{window}h"] = missing_now.rolling(
             window, min_periods=1
         ).mean()
@@ -307,6 +343,24 @@ def _add_station_features(station: pd.DataFrame) -> pd.DataFrame:
         feature_values[f"feature_sensor_group_present_fraction_24h_{group}"] = present.rolling(
             24, min_periods=1
         ).mean()
+        for window in (168, 336, 720):
+            feature_values[f"feature_sensor_group_present_fraction_{window}h_{group}"] = present.rolling(
+                window, min_periods=1
+            ).mean()
+    for window in (168, 336, 720):
+        history = health.rolling(window, min_periods=min(24, window))
+        feature_values[f"feature_health_mean_{window}h"] = history.mean()
+        feature_values[f"feature_health_std_{window}h"] = history.std(ddof=0)
+        feature_values[f"feature_health_min_{window}h"] = history.min()
+        feature_values[f"feature_health_max_{window}h"] = history.max()
+        for band, lower, upper in HEALTH_FORECAST_BAND_INTERVALS:
+            in_band = health.ge(float(lower)) & health.lt(float(upper))
+            feature_values[f"feature_health_band_fraction_{window}h_{band.lower()}"] = in_band.astype(float).rolling(
+                window, min_periods=min(24, window)
+            ).mean()
+    current_band = result["health_band"].astype(str)
+    band_start = current_band.ne(current_band.shift(1)).cumsum()
+    feature_values["feature_hours_in_current_health_band"] = current_band.groupby(band_start).cumcount().add(1).astype(float)
     detector = build_causal_detector_evidence(result).reset_index(drop=True)
     for kind in ("physical", "stuck", "deviation"):
         for group in SENSOR_GROUP_ORDER:
@@ -431,6 +485,8 @@ def build_health_forecast_features(
 
 
 def _rolling_sum(values: np.ndarray, window: int, *, min_periods: int) -> np.ndarray:
+    if int(window) == 0:
+        return np.zeros(len(values), dtype=float)
     series = pd.Series(values, dtype=float)
     return series.rolling(int(window), min_periods=int(min_periods)).sum().to_numpy(dtype=float)
 
@@ -442,8 +498,11 @@ def _project_fault_burden(
 ) -> np.ndarray:
     window = int(HEALTH_HISTORY_HOURS)
     keep = window - int(step)
-    if keep <= 0:
+    if keep < 0:
         raise ValueError("roll-forward step must be shorter than the health window")
+    if keep == 0:
+        rate = np.nan_to_num(future_evidence, nan=0.0)
+        return 1.0 - np.clip(rate / float(FAULT_EVIDENCE_RATE_CAP), 0.0, 1.0)
     weights = np.exp(
         -np.log(2.0) * np.arange(window, dtype=float) / float(FAULT_EVIDENCE_HALF_LIFE_HOURS)
     )
@@ -459,8 +518,8 @@ def _project_fault_burden(
 def _project_station_no_new_incident(station: pd.DataFrame, horizon: int) -> pd.Series:
     source = station.reset_index(drop=True).copy()
     h = int(horizon)
-    if h <= 0 or h >= HEALTH_HISTORY_HOURS:
-        raise ValueError("health forecast horizon must be between one and 167 hours")
+    if h <= 0 or h > HEALTH_HISTORY_HOURS:
+        raise ValueError("health forecast horizon must be between one and 168 hours")
     n_rows = len(source)
     full = source["availability_class"].eq(AVAILABILITY_CLASS_FULL_OUTAGE).to_numpy()
     partial = source["availability_class"].eq(AVAILABILITY_CLASS_PARTIAL_OUTAGE).to_numpy()
@@ -602,8 +661,8 @@ def attach_health_forecast_inference_baselines(
 ) -> pd.DataFrame:
     result = frame.copy(deep=True)
     h = int(horizon)
-    if h <= 0 or h >= HEALTH_HISTORY_HOURS:
-        raise ValueError("health forecast horizon must be between one and 167 hours")
+    if h <= 0 or h > HEALTH_HISTORY_HOURS:
+        raise ValueError("health forecast horizon must be between one and 168 hours")
     current = pd.to_numeric(result["health_total"], errors="coerce")
     result["baseline_persistence_level"] = current
     result["baseline_trend_level"] = _recent_trend_projection(result, h)
@@ -627,11 +686,24 @@ def attach_health_forecast_inference_baselines(
     return result
 
 
+def _attach_target_calendar_features(frame: pd.DataFrame, horizon: int) -> pd.DataFrame:
+    result = frame.copy(deep=True)
+    target_hour = result["hour_utc"] + pd.Timedelta(hours=int(horizon))
+    hour_value = target_hour.dt.hour.astype(float)
+    day_value = target_hour.dt.dayofyear.astype(float)
+    result["feature_target_hour_sin"] = np.sin(2.0 * np.pi * hour_value / 24.0)
+    result["feature_target_hour_cos"] = np.cos(2.0 * np.pi * hour_value / 24.0)
+    result["feature_target_day_of_year_sin"] = np.sin(2.0 * np.pi * day_value / 366.0)
+    result["feature_target_day_of_year_cos"] = np.cos(2.0 * np.pi * day_value / 366.0)
+    return result
+
+
 def health_forecast_inference_frame(
     bundle: HealthForecastFeatureBundle,
     horizon: int,
 ) -> pd.DataFrame:
     result = attach_health_forecast_inference_baselines(bundle.frame, int(horizon))
+    result = _attach_target_calendar_features(result, int(horizon))
     scoreable = pd.to_numeric(result["health_total"], errors="coerce").notna()
     return result.loc[scoreable].reset_index(drop=True)
 
@@ -651,6 +723,7 @@ def _attach_targets_and_baselines(
         target_hour.loc[station.index] = station["hour_utc"].shift(-h).to_numpy()
     exact = target_hour.sub(result["hour_utc"]).dt.total_seconds().div(3600.0).eq(h)
     result["label_end_utc"] = result["hour_utc"] + pd.Timedelta(hours=h)
+    result = _attach_target_calendar_features(result, h)
     result["target_health_total"] = target_level.where(exact)
     current = pd.to_numeric(result["health_total"], errors="coerce")
     result["target_delta_health"] = (result["target_health_total"] - current).where(
@@ -728,6 +801,7 @@ def health_forecast_horizon_frame(
     result["target_delta_health"] = pd.to_numeric(
         result["target_delta_health"], errors="coerce"
     )
+    result = _attach_target_calendar_features(result, h)
     return result.reset_index(drop=True)
 
 
@@ -912,7 +986,18 @@ def _feature_columns_for_set(
             raise KeyError(f"core health-forecast features are missing: {', '.join(missing)}")
         return tuple(HEALTH_FORECAST_CORE_FEATURES)
     if feature_set == "full_engineered":
-        return tuple(bundle.feature_columns)
+        long_only = set(HEALTH_FORECAST_LONG_FEATURES).difference(
+            HEALTH_FORECAST_CORE_FEATURES
+        )
+        return tuple(
+            column for column in bundle.feature_columns if column not in long_only
+        )
+    if feature_set == "long_horizon":
+        available = set(bundle.frame.columns).union(HEALTH_FORECAST_TARGET_CALENDAR_FEATURES)
+        missing = sorted(set(HEALTH_FORECAST_LONG_FEATURES).difference(available))
+        if missing:
+            raise KeyError(f"long-horizon health-forecast features are missing: {', '.join(missing)}")
+        return tuple(HEALTH_FORECAST_LONG_FEATURES)
     raise ValueError(feature_set)
 
 
@@ -1314,6 +1399,7 @@ def _select_regime_configuration(
     recency_rows: list[dict[str, object]],
     family_rows: list[dict[str, object]],
     alpha_rows: list[dict[str, object]],
+    feature_sets: tuple[str, ...],
 ) -> tuple[ResidualCandidate, str]:
     cache: dict[tuple[str, str, int | None, int | None], ResidualCandidate] = {}
 
@@ -1392,7 +1478,7 @@ def _select_regime_configuration(
             selected_iterations,
             "feature_ablation",
         )
-        for feature_set in HEALTH_FORECAST_FEATURE_SETS
+        for feature_set in feature_sets
     ]
     for candidate in ablation_candidates:
         ablation_rows.append(
@@ -1407,7 +1493,7 @@ def _select_regime_configuration(
         ablation_candidates,
         key=lambda candidate: (
             float(candidate.validation_metrics["mae"]),
-            HEALTH_FORECAST_FEATURE_SETS.index(candidate.feature_set),
+            feature_sets.index(candidate.feature_set),
         ),
     ).feature_set
 
@@ -2240,6 +2326,25 @@ def _format_frame(frame: pd.DataFrame) -> str:
 
 
 def build_health_forecast_report(run: HealthForecastRun) -> str:
+    run_horizons = tuple(
+        sorted(pd.to_numeric(run.metrics["horizon_h"], errors="raise").astype(int).unique())
+    )
+    horizon_text = "/".join(str(horizon) for horizon in run_horizons)
+    long_horizon_run = bool(run_horizons) and min(run_horizons) >= 48
+    title = (
+        "HEALTH SCORE FORECASTING: TWO-TO-SEVEN-DAY FEATURE COMPARISON"
+        if long_horizon_run
+        else "HEALTH SCORE FORECASTING: FIVE-HORIZON TRANSMITTING-STATION REPORT"
+    )
+    methodological_disclosure = (
+        "Methodological disclosure: this supervisor-requested 2-to-7-day extension evaluates the predeclared "
+        f"{horizon_text}-hour grid. Model family, feature set, recency weighting, alpha, and all other "
+        "data-driven choices were selected on chronological validation only; final models were refitted on "
+        "train plus validation and each frozen configuration was evaluated once on test. The original "
+        "1/3/6/12/24-hour deployed forecast and its artifacts are not modified by this comparison."
+        if long_horizon_run
+        else "Methodological disclosure: the first test evaluation at commit 8c7b748 and the 6/12/24-hour residual-forecaster results at commit a26881d influenced this extension and operational rescope. The five-horizon grid and transmitting-origin primary scope were locked before this run. Every data-driven model, feature, recency, alpha, and threshold choice below used chronological validation only; trajectory and band classifier configurations were fixed a priori; final models were refitted on train plus validation; and each frozen configuration was evaluated once on test. These are post-hoc model-improvement results, not a clean single-shot test."
+    )
     audit_summary = summarize_health_forecast_feature_audit(run.feature_audit)
     diagnostics = _legacy_part_a_diagnostics()
     master_comparison = _master_comparison_table(run.metrics)
@@ -2271,7 +2376,7 @@ def build_health_forecast_report(run: HealthForecastRun) -> str:
         )
     ]
     horizon_conclusions: list[str] = []
-    for horizon in HEALTH_FORECAST_HORIZONS:
+    for horizon in run_horizons:
         group = run.metrics.loc[
             run.metrics["horizon_h"].eq(horizon)
             & run.metrics["target"].eq("level")
@@ -2434,9 +2539,9 @@ def build_health_forecast_report(run: HealthForecastRun) -> str:
                 "versus persistence. Recovery timing depends on unobserved intervention, so this remains supplementary and low-confidence."
             )
     lines = [
-        "HEALTH SCORE FORECASTING: FIVE-HORIZON TRANSMITTING-STATION REPORT",
+        title,
         "",
-        "Methodological disclosure: the first test evaluation at commit 8c7b748 and the 6/12/24-hour residual-forecaster results at commit a26881d influenced this extension and operational rescope. The five-horizon grid and transmitting-origin primary scope were locked before this run. Every data-driven model, feature, recency, alpha, and threshold choice below used chronological validation only; trajectory and band classifier configurations were fixed a priori; final models were refitted on train plus validation; and each frozen configuration was evaluated once on test. These are post-hoc model-improvement results, not a clean single-shot test.",
+        methodological_disclosure,
         "Historical implementation disclosure: one earlier pre-report rebuild was discarded after code review found specification deviations in Ridge feature scope, trajectory/band population, and the network trend definition. The a26881d implementation corrected those issues. This later run deliberately supersedes the earlier overall-population classification scope with the predeclared transmitting-origin deployment scope; no candidate grid, threshold rule, or model choice was changed in response to the current test metrics.",
         "Primary target: residual = health(t+H) - no-new-incident-roll-forward(t+H). Production health is clip(roll-forward + alpha * predicted residual, 0, 100), with validation-only alpha in {0, 0.1, 0.25, 0.5, 0.75, 1}. Delta is derived from the bounded level, so its physical bounds are automatic.",
         "",
@@ -2445,7 +2550,7 @@ def build_health_forecast_report(run: HealthForecastRun) -> str:
         "Classification metrics, calibration, and the primary regression table all use the same transmitting-origin station-hours. Persistence, fixed trailing-24-hour trend, and no-new-incident roll-forward remain mandatory comparators.",
         "",
         "2. PRIMARY REGRESSION: TRANSMITTING ORIGINS",
-        "MAE, RMSE, R2, sample count, and percentage improvement versus persistence and roll-forward for all five horizons and all four methods:",
+        f"MAE, RMSE, R2, sample count, and percentage improvement versus persistence and roll-forward for the {horizon_text}-hour horizons and all four methods:",
         _format_frame(primary_regression),
         "Short-horizon interpretation:",
         *short_horizon_notes,
@@ -2484,12 +2589,12 @@ def build_health_forecast_report(run: HealthForecastRun) -> str:
         "7. VALIDATION-ONLY TOP-20 FEATURE IMPORTANCE: TRANSMITTING MODELS",
         _format_frame(transmitting_importance),
         "",
-        "8. DEGRADATION FROM 1 TO 24 HOURS",
+        f"8. DEGRADATION ACROSS {horizon_text}-HOUR HORIZONS",
         "8a. Transmitting-origin regression by horizon:",
         _format_frame(regression_degradation),
         "8b. Transmitting-origin four-band metrics by horizon:",
         _format_frame(band_degradation),
-        "The companion horizon-degradation figure plots the selected-policy regression error and band metrics from 1h through 24h. Deterioration across horizon is expected because uncertainty accumulates; the short-horizon persistence comparator is intentionally retained.",
+        f"The companion horizon-degradation figure plots selected-policy regression error and band metrics at {horizon_text} hours. Deterioration across horizon is expected because uncertainty accumulates; persistence remains a mandatory comparator.",
         "",
         "APPENDIX A. DIAGNOSTICS OF THE FIRST FORECASTER",
         "A0. Provenance: these frozen diagnostics were replayed from commit 8c7b748 before rebuilding. The legacy prediction ledger SHA-256 is DB0D05BD739561C58E1014488F6FD08FEC6E0B07398B2F07742DF92F305B4FB5 and its metrics-table SHA-256 is C99A97970401907527EE56ADA9B0997E5F30C973C9A5B1B8F92EFC70BD644BB1. Signed error is predicted minus actual; meaningful future drop means health(t+24)-health(t) <= -5.",
@@ -2559,7 +2664,7 @@ def build_health_forecast_report(run: HealthForecastRun) -> str:
         "",
         "APPENDIX G. DELETE-THE-FUTURE FEATURE AUDIT",
         _format_frame(audit_summary),
-        "The same audited causal origin features feed all five horizons. Exact-clock target construction and the horizon-specific 1/3/6/12/24-hour boundary purges are verified separately, so the delete-the-future result applies to every reported horizon.",
+        f"The same audited causal origin features feed all reported horizons. Exact-clock target construction and the horizon-specific {horizon_text}-hour boundary purges are verified separately, so the delete-the-future result applies to every reported horizon.",
         "Station identity is an immutable categorical key from the predeclared station registry. It is audited explicitly, every validation/test station occurs in training, and its encoder is fit only on train or train-plus-validation as appropriate.",
     ]
     return "\n".join(lines) + "\n"
@@ -2720,10 +2825,24 @@ def run_health_forecast(
     horizons: tuple[int, ...] = HEALTH_FORECAST_HORIZONS,
     feature_audit_samples: int = 8,
     model_directory: Path | None = None,
+    feature_sets: tuple[str, ...] | None = None,
 ) -> HealthForecastRun:
     horizons = tuple(int(value) for value in horizons)
     if not horizons or len(set(horizons)) != len(horizons):
         raise ValueError("health forecast horizons must be non-empty and unique")
+    selected_feature_sets = (
+        tuple(feature_sets)
+        if feature_sets is not None
+        else (
+            HEALTH_FORECAST_LONG_FEATURE_SETS
+            if max(horizons) >= 48
+            else HEALTH_FORECAST_FEATURE_SETS
+        )
+    )
+    if not selected_feature_sets or not set(selected_feature_sets).issubset(
+        HEALTH_FORECAST_LONG_FEATURE_SETS
+    ):
+        raise ValueError("health forecast feature sets are invalid")
     bundle = build_health_forecast_dataset(
         scores,
         station_metadata=station_metadata,
@@ -2831,6 +2950,7 @@ def run_health_forecast(
                 recency_rows=recency_rows,
                 family_rows=family_rows,
                 alpha_rows=alpha_rows,
+                feature_sets=selected_feature_sets,
             )
             selected_by_regime[regime] = candidate
             policy_by_regime[regime] = policy
@@ -3290,6 +3410,13 @@ def write_health_forecast_outputs(
     destination.mkdir(parents=True, exist_ok=True)
     master_comparison = _master_comparison_table(run.metrics)
     regression_degradation, band_degradation = _health_forecast_degradation_tables(run)
+    accuracy_curve = run.band_metrics.loc[
+        run.band_metrics["scope"].eq("transmitting_origin")
+        & run.band_metrics["method"].eq("selected_residual_forecast"),
+        ["horizon_h", "n", "accuracy"],
+    ].sort_values("horizon_h", kind="mergesort").reset_index(drop=True)
+    if accuracy_curve["horizon_h"].duplicated().any():
+        raise RuntimeError("health forecast accuracy curve has duplicate horizons")
     output_paths = {
         "metrics": _write_frame(run.metrics, destination / "health_forecast_metrics.csv"),
         "master_comparison": _write_frame(master_comparison, destination / "health_forecast_master_comparison.csv"),
@@ -3316,6 +3443,7 @@ def write_health_forecast_outputs(
         "transmitting_population_counts": _write_frame(transmitting_population_counts, destination / "health_forecast_transmitting_population_counts.csv"),
         "regression_degradation": _write_frame(regression_degradation, destination / "health_forecast_horizon_regression_degradation.csv"),
         "band_degradation": _write_frame(band_degradation, destination / "health_forecast_horizon_band_degradation.csv"),
+        "accuracy_curve": _write_frame(accuracy_curve, destination / "health_forecast_accuracy_curve.csv"),
     }
     diagnostics = _legacy_part_a_diagnostics()
     for name, frame in diagnostics.items():

@@ -52,6 +52,10 @@ historical result can be regenerated from a bare clone.
 - The live reproducible label file, `data/labels/episode_labels.csv`.
 - Current full/partial availability evidence, health-score artifacts, health
   forecast figures, and the latest operational scorecard.
+- The supervisor-requested Day-2 through Day-7 health-forecast accuracy study,
+  with a compact tracked result table and reproducible methodology note. This
+  is an extension study, not a replacement for the deployed 1/3/6/12/24-hour
+  forecasts.
 - Frozen July binary predictions, health forecasts, detector evidence, selected
   HGB evaluation figures, and the read-only replay dashboard.
 - Corrected incident-risk construction and comparison code, retained as
@@ -131,6 +135,20 @@ under `data/eval/health_forecast/` and `data/model/health_forecast/`.
 `--scorecard` requires those generated models. The tracked scorecard CSV,
 report, invariants, and causal audit are published so the completed snapshot can
 be inspected even when the ignored model bundles are not present in a clone.
+
+The isolated Day-2 through Day-7 extension can be reproduced without replacing
+the deployed forecast directory:
+
+```bash
+python scripts/build_station_health.py --long-horizon-forecast --long-horizon-features current
+python scripts/build_station_health.py --long-horizon-forecast --long-horizon-features extended
+```
+
+Its compact accuracy curve is tracked at
+`data/report/health_forecast_2_to_7_day_accuracy.csv`; the validation-only
+selection protocol and result interpretation are documented in
+`docs/health_forecast_2_to_7_day_experiment.md`. Detailed generated models and
+evaluation ledgers remain ignored.
 
 Run the frozen July operational replay:
 

@@ -49,6 +49,14 @@ def test_report_front_door_selects_one_figure_set() -> None:
     assert parse_report_args([]) == "methodology"
 
 
+def test_station_health_front_door_exposes_separate_long_horizon_mode() -> None:
+    args = build_station_health.parse_args(["--long-horizon-forecast"])
+
+    assert args.long_horizon_forecast
+    assert not args.forecast
+    assert not args.scorecard
+
+
 def test_dashboard_source_contains_no_evaluation_metrics_or_ground_truth() -> None:
     source = Path(run_dashboard.__file__).read_text(encoding="utf-8").lower()
 

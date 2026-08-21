@@ -61,6 +61,9 @@ STATION_HEALTH_OUTAGE_TRAJECTORY_PATH = (
 )
 HEALTH_FORECAST_DIR = EVALUATION_DIR / "health_forecast"
 HEALTH_FORECAST_MODEL_DIR = MODEL_DIR / "health_forecast"
+HEALTH_FORECAST_LONG_HORIZON_DIR = EVALUATION_DIR / "health_forecast_long_horizon"
+HEALTH_FORECAST_LONG_HORIZON_MODEL_DIR = MODEL_DIR / "health_forecast_long_horizon"
+FROZEN_RULE_STATISTICS_DIR = MODEL_DIR / "frozen_rule_statistics"
 STATION_OPERATIONAL_SCORECARD_PATH = (
     PROCESSED_DIR / "station_operational_scorecard.csv"
 )
@@ -95,6 +98,15 @@ HEALTH_FORECAST_CALIBRATION_FIGURE_PATH = (
 )
 HEALTH_FORECAST_HORIZON_DEGRADATION_FIGURE_PATH = (
     FIGURES_DIR / "health_forecast_horizon_degradation.png"
+)
+HEALTH_FORECAST_LONG_HORIZON_BASELINE_COMPARISON_FIGURE_PATH = (
+    FIGURES_DIR / "health_forecast_long_horizon_baseline_comparison.png"
+)
+HEALTH_FORECAST_LONG_HORIZON_CALIBRATION_FIGURE_PATH = (
+    FIGURES_DIR / "health_forecast_long_horizon_level_calibration.png"
+)
+HEALTH_FORECAST_LONG_HORIZON_DEGRADATION_FIGURE_PATH = (
+    FIGURES_DIR / "health_forecast_long_horizon_degradation.png"
 )
 
 CANONICAL_TIMEZONE = "UTC"

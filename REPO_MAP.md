@@ -219,11 +219,15 @@ tracked outputs are `hourly_availability_classification.parquet`,
 
 **Purpose.** Build a causal 0-100 current-health score, evaluate health at
 1/3/6/12/24-hour horizons for transmitting stations, and assemble one current
-operational row for each of the 26 stations.
+operational row for each of the 26 stations. A separate supervisor-requested
+study extends evaluation to exact 48/72/96/120/144/168-hour horizons without
+replacing the deployed models.
 
 **Front door.** `scripts/build_station_health.py`. The default builds current
 health, `--forecast` trains/evaluates the five horizons, and `--scorecard`
-assembles a parameterised station snapshot without retraining.
+assembles a parameterised station snapshot without retraining. The isolated
+extension uses `--long-horizon-forecast --long-horizon-features
+{current,extended}`.
 
 **Main code.** `src/availability/health_score.py`, `health_forecast.py`, and
 `operational_scorecard.py`.
@@ -234,7 +238,11 @@ generated below ignored `data/eval/health_forecast/` and
 `data/model/health_forecast/`. The tracked score, summary, causal audits,
 figures, scorecard, report, and invariants preserve the completed result.
 Regenerating the scorecard requires the five selected models produced by
-`--forecast`.
+`--forecast`. The extension writes ignored detailed artifacts below
+`data/eval/health_forecast_long_horizon/` and
+`data/model/health_forecast_long_horizon/`; its compact accuracy result is
+tracked at `data/report/health_forecast_2_to_7_day_accuracy.csv` and interpreted
+in `docs/health_forecast_2_to_7_day_experiment.md`.
 
 **Tests.** `tests/test_availability.py` and
 `tests/test_front_door_scripts.py`.
@@ -412,6 +420,7 @@ Package markers are omitted below unless they contain runtime code.
 | `data/processed/station_health_scores.parquet` and `station_health_summary.csv` | Published current-health evidence | Causal score components, total, band, summaries, and diagnostics. |
 | `data/processed/station_operational_scorecard.csv` | Published operational snapshot | One current row per station, with health, forecast, availability, evidence, and reliability fields. |
 | `data/eval/health_forecast/` and `data/model/health_forecast/` | Ignored generated artifacts | Created by `build_station_health.py --forecast`; required to regenerate the scorecard. |
+| `data/report/health_forecast_2_to_7_day_accuracy.csv` | Published extension evidence | Day-2 through Day-7 exact health-band accuracy; detailed local artifacts remain ignored. |
 | `data/eval/july_2026_health/station_health_scores_through_july.parquet` | Published dashboard input | Causal station-health history through July. |
 | `data/eval/july_2026_health_forecast/july_health_forecast_predictions.parquet` | Published dashboard input | Frozen selected-policy forecasts at 1/3/6/12/24 hours. |
 | `data/eval/july_2026_scoring/july_binary_predictions.parquet` | Published dashboard input | Frozen selected-HGB probabilities and predictions. |
@@ -501,6 +510,10 @@ python scripts/build_station_health.py
 # Generates ignored evaluation files and the models needed by --scorecard
 python scripts/build_station_health.py --forecast
 python scripts/build_station_health.py --scorecard
+
+# Isolated Day-2 through Day-7 feature comparison
+python scripts/build_station_health.py --long-horizon-forecast --long-horizon-features current
+python scripts/build_station_health.py --long-horizon-forecast --long-horizon-features extended
 
 # Corrected label/split construction; model routes remain future-work evidence
 python scripts/evaluate_outage_risk.py --target outage

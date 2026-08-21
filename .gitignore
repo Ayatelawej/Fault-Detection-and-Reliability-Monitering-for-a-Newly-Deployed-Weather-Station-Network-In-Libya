@@ -19,6 +19,7 @@ data/eval/*
 !data/eval/outage_risk_event_metrics.csv
 !data/eval/outage_risk_hour_metrics.csv
 !data/eval/outage_risk_predictions.parquet
+/outputs/figures/health_forecast_long_horizon_*.png
 .ipynb_checkpoints/
 .DS_Store
 Thumbs.db
