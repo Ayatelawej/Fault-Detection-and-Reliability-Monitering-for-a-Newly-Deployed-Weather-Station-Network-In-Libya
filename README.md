@@ -175,8 +175,7 @@ evaluated development work rather than a claimed delivered output.
 - `tests/` - regression tests for the retained public system.
 
 The final report is available in both Word and PDF form under `docs/report/`.
-`docs/DEMO_GUIDE.md`, `docs/VIVA_STUDY_GUIDE.md`, and
-`docs/SUBMISSION_CHECKLIST.md` provide a concise handoff.
+`docs/DEMO_GUIDE.md` provides a concise operational replay handoff.
 
 ## Licence and data use
 
